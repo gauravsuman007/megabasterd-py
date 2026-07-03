@@ -1,0 +1,682 @@
+/* Vivid teal theme. Dark is the default (:root); light is applied when
+   <html data-theme="light"> is set. The head sets data-theme before paint
+   from localStorage / OS preference, and the header toggle flips it. */
+:root, :root[data-theme="dark"] {
+    --bg: #0a0f0e;
+    --header-bg: #0f1917;
+    --panel: #101a18;
+    --border: #1d2c29;
+    --text: #dff3ef;
+    --muted: #7fa29b;
+    --accent: #2dd4bf;
+    --accent-strong: #14b8a6;
+    --on-accent: #04211c;
+    --input-bg: #0c1513;
+    --input-bg-deep: #080f0e;
+    --track: #152623;
+    --tint-bg: #12312b;
+    --tint-bg-hover: #164039;
+    --tint-text: #5eead4;
+    --overlay: rgba(0, 0, 0, 0.6);
+    --ok: #34d399;
+    --err: #fb7185;
+}
+
+:root[data-theme="light"] {
+    --bg: #eef7f5;
+    --header-bg: #ffffff;
+    --panel: #ffffff;
+    --border: #d8e8e4;
+    --text: #0f2b28;
+    --muted: #5a7a74;
+    --accent: #0d9488;
+    --accent-strong: #0f766e;
+    --on-accent: #ffffff;
+    --input-bg: #f4faf9;
+    --input-bg-deep: #eef6f4;
+    --track: #dbeeea;
+    --tint-bg: #d9efe9;
+    --tint-bg-hover: #c7e7df;
+    --tint-text: #0b5148;
+    --overlay: rgba(15, 43, 40, 0.35);
+    --ok: #0f9d6b;
+    --err: #e11d48;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+}
+
+header {
+    padding: 1.25rem 2rem;
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+header h1 {
+    margin: 0;
+    font-size: 1.4rem;
+}
+
+header nav {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    position: relative;
+}
+
+.nav-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.8rem;
+    border-radius: 9px;
+    border: 1px solid transparent;
+    background: var(--tint-bg);
+    color: var(--tint-text);
+    font-size: 0.85rem;
+    font-weight: 500;
+    line-height: 1;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.nav-btn:hover { background: var(--tint-bg-hover); }
+
+.nav-btn svg {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 auto;
+}
+
+.nav-btn.icon-only { padding: 0.45rem; }
+
+/* Current page's chip: solid accent instead of the soft tint. */
+.nav-btn.active {
+    background: var(--accent);
+    color: var(--on-accent);
+}
+
+.nav-btn.active:hover { background: var(--accent-strong); }
+
+/* Show a sun in dark mode (click for light), a moon in light mode. */
+:root[data-theme="light"] .theme-toggle .icon-sun { display: none; }
+:root:not([data-theme="light"]) .theme-toggle .icon-moon { display: none; }
+
+/* Accent color picker: the button shows the current accent as a dot; the
+   popover is a 7x7 grid of the Windows accent palette (plus default teal),
+   built by theme.js. */
+.accent-dot {
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--accent);
+    display: inline-block;
+}
+
+.accent-popover {
+    position: absolute;
+    top: calc(100% + 10px);
+    right: 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.75rem;
+    display: grid;
+    grid-template-columns: repeat(7, 1.7rem);
+    gap: 0.45rem;
+    box-shadow: 0 10px 28px var(--overlay);
+    z-index: 60;
+}
+
+.accent-popover.hidden { display: none; }
+
+.accent-swatch {
+    width: 1.7rem;
+    height: 1.7rem;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    padding: 0;
+    cursor: pointer;
+}
+
+.accent-swatch:hover { transform: scale(1.12); }
+
+.accent-swatch.selected {
+    outline: 2px solid var(--text);
+    outline-offset: 2px;
+}
+
+.subtitle {
+    color: var(--muted);
+    font-weight: 400;
+    font-size: 0.9rem;
+}
+
+.version {
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+main {
+    max-width: 720px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+}
+
+.card h2 {
+    margin-top: 0;
+    font-size: 1rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.card form {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.card form input,
+.card form select {
+    flex: 1;
+    padding: 0.6rem 0.75rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--input-bg);
+    color: var(--text);
+}
+
+.card form button {
+    padding: 0.6rem 1.1rem;
+    border-radius: 6px;
+    border: none;
+    background: var(--accent);
+    color: var(--on-accent);
+    cursor: pointer;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.card form button:hover { opacity: 0.9; }
+
+#download-form {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+#download-form textarea {
+    width: 100%;
+    min-height: 5rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--input-bg);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.9rem;
+    resize: vertical;
+}
+
+#download-form button { align-self: flex-start; }
+
+#transfer-list,
+#account-list,
+.folder-children {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+}
+
+/* Scoped to beat the `.folder-picker-section ul { padding: 0 }` rule, which
+   is more specific than a bare `.folder-children` and was silently zeroing
+   this indent -- nested files/folders never actually stepped in before. */
+.folder-picker-section ul.folder-children {
+    margin-top: 0.5rem;
+    padding-left: 1.75rem;
+    border-left: 1px solid var(--border);
+}
+
+.folder-children.collapsed { display: none; }
+
+/* Cap the transfer queue at roughly five rows (~72px pitch with the stats
+   line) and scroll the rest; the partial sixth row hints there's more below. */
+#transfer-list {
+    max-height: 22.5rem;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+}
+
+.tree-toggle {
+    flex: 0 0 auto;
+    width: 1.4rem;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.8rem;
+    line-height: 1;
+}
+
+.tree-toggle:hover { color: var(--text); }
+
+.tree-toggle-spacer {
+    flex: 0 0 auto;
+    width: 1.4rem;
+    display: inline-block;
+}
+
+.folder-picker-section .name {
+    display: flex;
+    align-items: center;
+    gap: 0.1rem;
+}
+
+#account-list:not(:empty) { margin-top: 1rem; }
+
+.download-item .name {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    font-size: 0.9rem;
+    margin-bottom: 0.35rem;
+}
+
+.download-item .filename {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.download-item .status {
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+.download-item .status.done { color: var(--ok); }
+.download-item .status.error, .download-item .status.mac_mismatch, .download-item .status.cancelled { color: var(--err); }
+.download-item .status.paused { color: var(--accent); }
+
+.download-item .speed {
+    color: var(--muted);
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+/* Per-file stats line: downloaded / total · speed · ETA, sitting between the
+   filename row and the progress bar. */
+.download-item .file-stats {
+    color: var(--muted);
+    font-size: 0.8rem;
+    margin-bottom: 0.35rem;
+    min-height: 1rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.download-item .file-stats:empty { margin-bottom: 0; min-height: 0; }
+
+.cancel-btn, .pause-btn {
+    padding: 0.2rem 0.6rem;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.cancel-btn:hover { border-color: var(--err); color: var(--err); }
+.pause-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.progress-track {
+    height: 8px;
+    border-radius: 4px;
+    background: var(--input-bg);
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.2s ease;
+}
+
+.checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+#smartproxy-form {
+    gap: 1.25rem;
+    margin-bottom: 0.75rem;
+}
+
+#smartproxy-list {
+    width: 100%;
+    min-height: 5rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--input-bg);
+    color: var(--text);
+    font-family: ui-monospace, monospace;
+    font-size: 0.85rem;
+    resize: vertical;
+}
+
+
+.proxy-list-columns {
+    display: flex;
+    gap: 1rem;
+}
+
+.proxy-list-column {
+    flex: 1;
+    min-width: 0;
+}
+
+.proxy-list-label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 0.35rem;
+}
+
+.row-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.row-actions button {
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+}
+
+.row-actions button:hover { border-color: var(--accent); }
+
+main:has(#settings-tabs) { max-width: 900px; }
+
+.tabs {
+    display: flex;
+    gap: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.tab-btn {
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { background: var(--panel); border-color: var(--border); color: var(--accent); }
+
+.tab-panel { display: none; flex-direction: column; gap: 1.5rem; }
+.tab-panel.active { display: flex; }
+
+.settings-form {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.settings-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+}
+
+.settings-form label .hint { font-weight: 400; }
+
+.settings-form input[type="text"],
+.settings-form input[type="number"] {
+    padding: 0.6rem 0.75rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--input-bg);
+    color: var(--text);
+}
+
+.settings-form button {
+    align-self: flex-start;
+    padding: 0.6rem 1.1rem;
+    border-radius: 6px;
+    border: none;
+    background: var(--accent);
+    color: var(--on-accent);
+    cursor: pointer;
+    font-weight: 600;
+}
+
+#tab-smartproxy label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-top: 0.75rem;
+}
+
+#tab-smartproxy input[type="number"] {
+    max-width: 10rem;
+    padding: 0.5rem 0.65rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--input-bg);
+    color: var(--text);
+}
+
+.hint {
+    color: var(--muted);
+    font-size: 0.8rem;
+    margin: 0.25rem 0 0.75rem;
+}
+
+.hint a { color: var(--accent); }
+
+.disabled-section {
+    opacity: 0.7;
+}
+
+.disabled-section h2 { color: var(--err); opacity: 0.8; }
+
+.gap-list {
+    margin: 0;
+    padding-left: 1.25rem;
+    font-size: 0.85rem;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--overlay);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    z-index: 100;
+}
+
+.modal-box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    width: 100%;
+    max-width: 640px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.modal-header h2 {
+    margin: 0;
+    font-size: 1rem;
+    color: var(--text);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.modal-close {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 1.5rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 0.25rem;
+}
+
+.modal-close:hover { color: var(--text); }
+
+.modal-summary {
+    padding: 0.75rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.modal-body {
+    padding: 1rem 1.25rem;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.folder-picker-section {
+    margin-bottom: 1.25rem;
+}
+
+.folder-picker-section:last-child { margin-bottom: 0; }
+
+.folder-picker-section h3 {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin: 0 0 0.5rem;
+    word-break: break-all;
+    font-weight: 400;
+}
+
+.folder-picker-section ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.folder-picker-section .node-size {
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+
+.folder-picker-section li.is-empty > .name > .checkbox-row {
+    opacity: 0.5;
+}
+
+.folder-picker-section .empty-badge {
+    color: var(--err);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-left: 0.4rem;
+}
+
+.modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 1rem 1.25rem;
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+}
+
+.modal-footer-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.modal-footer button {
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.modal-footer button:hover { border-color: var(--accent); }
+
+.modal-footer button#folder-picker-download-btn {
+    border: none;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-weight: 600;
+}
+
+.modal-footer button#folder-picker-download-btn:hover { opacity: 0.9; }

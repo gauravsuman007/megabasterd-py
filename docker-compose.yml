@@ -1,0 +1,13 @@
+services:
+  megabasterd:
+    build: .
+    ports:
+      - "8009:8009"
+    volumes:
+      - megabasterd-data:/data
+      - megabasterd-downloads:/downloads
+    restart: unless-stopped
+
+volumes:
+  megabasterd-data:
+  megabasterd-downloads:
