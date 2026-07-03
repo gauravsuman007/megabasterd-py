@@ -19,6 +19,9 @@ READ_BLOCK_SIZE = 1024 * 1024
 
 
 def split_file(source_path: str, output_dir: str, mb_per_split: int, progress_cb: ProgressCallback | None = None) -> list[str]:
+    """Split a file into ``<name>.partI-N`` pieces of `mb_per_split` MB each
+    (the last is smaller), writing them into `output_dir`. `progress_cb`, if
+    given, is called with (bytes_done, total). Returns the part paths in order."""
     if mb_per_split <= 0:
         raise ValueError("mb_per_split must be greater than zero")
 
@@ -76,6 +79,8 @@ def discover_parts(any_part_path: str) -> tuple[str, list[str]]:
 
 
 def merge_parts(part_paths: list[str], dest_path: str, progress_cb: ProgressCallback | None = None, delete_parts_after: bool = False) -> None:
+    """Concatenate `part_paths` (in the given order) into `dest_path`, optionally
+    deleting the parts afterwards. `progress_cb` gets (bytes_done, total)."""
     total = sum(Path(p).stat().st_size for p in part_paths)
     progress = 0
     with open(dest_path, "wb") as dst:

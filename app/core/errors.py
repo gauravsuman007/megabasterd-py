@@ -36,6 +36,13 @@ TWO_FACTOR_REQUIRED_CODE = -25
 
 
 class MegaAPIException(Exception):
+    """A negative MEGA API result code, raised by the API client.
+
+    Carries the numeric `code` and an optional `context` string; the
+    convenience properties classify the code so callers can branch on it
+    (retry, prompt for 2FA, reroute on quota) without hardcoding numbers.
+    """
+
     def __init__(self, code: int, context: str = ""):
         self.code = code
         self.context = context
@@ -44,14 +51,18 @@ class MegaAPIException(Exception):
 
     @property
     def is_retryable(self) -> bool:
+        """True for transient codes (EAGAIN / rate-limit) worth retrying."""
         return self.code in RETRYABLE_CODES
 
     @property
     def is_quota_exceeded(self) -> bool:
+        """True for -17, the storage/bandwidth quota (509) code that triggers
+        SmartProxy rerouting."""
         return self.code == QUOTA_EXCEEDED_CODE
 
     @property
     def is_two_factor_required(self) -> bool:
+        """True for -25, meaning login needs a 2FA code."""
         return self.code == TWO_FACTOR_REQUIRED_CODE
 
 

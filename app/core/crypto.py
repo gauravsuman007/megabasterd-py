@@ -58,6 +58,7 @@ def url_base64_to_bin(data: str) -> bytes:
 
 
 def bin_to_url_base64(data: bytes) -> str:
+    """Encode to MEGA's URL-safe base64: '-_' for '+/', padding stripped."""
     encoded = base64.b64encode(data).decode("ascii")
     return encoded.replace("+", "-").replace("/", "_").rstrip("=")
 
@@ -69,11 +70,16 @@ def bin_to_url_base64(data: bytes) -> str:
 ZERO_IV_16 = b"\x00" * 16
 
 
+# The *_nopad variants do no padding: the caller must pass block-aligned
+# (16-byte multiple) data. MEGA uses these with a zero IV for key wrapping
+# and attribute blobs; the pkcs7 variants below are for at-rest credentials.
 def aes_cbc_encrypt_nopad(data: bytes, key: bytes, iv: bytes = ZERO_IV_16) -> bytes:
+    """AES-CBC encrypt, no padding (data must be block-aligned)."""
     return AES.new(key, AES.MODE_CBC, iv).encrypt(data)
 
 
 def aes_cbc_decrypt_nopad(data: bytes, key: bytes, iv: bytes = ZERO_IV_16) -> bytes:
+    """AES-CBC decrypt, no padding (ciphertext must be block-aligned)."""
     return AES.new(key, AES.MODE_CBC, iv).decrypt(data)
 
 
@@ -222,6 +228,8 @@ ATTR_PREFIX = b"MEGA"
 
 
 def encrypt_attr(attr_json: bytes, key: bytes) -> bytes:
+    """Encrypt a node's attribute JSON: prepend the literal ``MEGA`` marker,
+    zero-pad to a 16-byte boundary, and AES-CBC encrypt with a zero IV."""
     data = ATTR_PREFIX + attr_json
     pad_len = (-len(data)) % 16
     data = data + b"\x00" * pad_len
@@ -229,6 +237,9 @@ def encrypt_attr(attr_json: bytes, key: bytes) -> bytes:
 
 
 def decrypt_attr(ciphertext: bytes, key: bytes) -> bytes:
+    """Inverse of `encrypt_attr`: decrypt, verify the ``MEGA`` marker (a wrong
+    key yields garbage that fails this check), and return the JSON bytes with
+    the marker and zero padding stripped. Raises ValueError on a bad key."""
     plain = aes_cbc_decrypt_nopad(ciphertext, key)
     if not plain.startswith(ATTR_PREFIX):
         raise ValueError("Bad attribute decryption (missing MEGA prefix)")
@@ -243,10 +254,14 @@ AT_REST_MAGIC = b"MB2\x00"
 
 
 def derive_master_key(master_password: str, salt: bytes) -> bytes:
+    """Derive the 32-byte at-rest key from the user's master password via
+    PBKDF2-HMAC-SHA256 (65536 rounds)."""
     return hashlib.pbkdf2_hmac("sha256", master_password.encode("utf-8"), salt, 65_536, dklen=32)
 
 
 def encrypt_at_rest(plaintext: bytes, key: bytes) -> bytes:
+    """Encrypt locally stored credentials. Output blob layout:
+    ``MB2\\x00`` magic + random 16-byte IV + AES-CBC/PKCS7 ciphertext."""
     import os
 
     iv = os.urandom(16)
@@ -254,6 +269,8 @@ def encrypt_at_rest(plaintext: bytes, key: bytes) -> bytes:
 
 
 def decrypt_at_rest(blob: bytes, key: bytes) -> bytes:
+    """Decrypt an `encrypt_at_rest` blob. Blobs without the magic are treated
+    as the legacy format (zero IV, no header) for backward compatibility."""
     if blob.startswith(AT_REST_MAGIC):
         iv = blob[4:20]
         ciphertext = blob[20:]
@@ -286,6 +303,9 @@ def mpi_to_int(data: bytes) -> tuple[int, bytes]:
 
 @dataclass
 class RSAPrivateComponents:
+    """The four MPIs of a MEGA account RSA private key: primes `p`, `q`, the
+    private exponent `d`, and the CRT coefficient `u` (unused by our raw
+    modular-exponentiation decrypt, kept for completeness)."""
     p: int
     q: int
     d: int

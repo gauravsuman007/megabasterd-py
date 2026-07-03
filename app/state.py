@@ -90,12 +90,16 @@ claimed_download_paths: set[str] = set()
 
 
 def active_proxy_manager() -> SmartProxyManager | None:
+    """The proxy manager if SmartProxy is enabled, else None -- so callers can
+    pass the result straight through and get direct connections when it's off."""
     return proxy_manager if smart_proxy_enabled else None
 
 
 
 
 async def broadcast(transfer_id: str) -> None:
+    """Push a transfer's current progress dict to every connected WebSocket,
+    dropping any subscriber whose send fails (a closed tab)."""
     payload = active_transfers[transfer_id]
     dead = []
     for ws in subscribers:

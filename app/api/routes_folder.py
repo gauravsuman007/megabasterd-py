@@ -1,3 +1,6 @@
+"""HTTP route for browsing a public MEGA folder link: fetches and decrypts the
+folder's nodes, builds a nested tree, and returns it as JSON (each file carries
+a ready-to-use scoped download link) for the folder-picker UI."""
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -13,6 +16,8 @@ router = APIRouter(prefix="/api", tags=["folder"])
 
 
 def _tree_to_dict(nodes, folder_id: str) -> list[dict]:
+    """Recursively serialize TreeNodes to JSON-able dicts, attaching a
+    `download_link` to each file node."""
     out = []
     for node in nodes:
         d = asdict(node)
@@ -25,6 +30,8 @@ def _tree_to_dict(nodes, folder_id: str) -> list[dict]:
 
 @router.get("/folder")
 async def browse_folder(link: str):
+    """Browse a public folder link, returning its `folder_id` and nested `tree`.
+    400 if the link isn't a folder."""
     parsed = parse_mega_link(link)
     if parsed.kind != "folder":
         raise HTTPException(400, "Not a folder link")

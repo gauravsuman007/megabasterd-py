@@ -1,3 +1,14 @@
+"""HTTP routes and background tasks driving the transfer queue.
+
+Each transfer is a dict in `state.active_transfers` (the client polls/receives
+these over the WebSocket) with an accompanying asyncio task in
+`state.transfer_tasks` and, while running, a pause `Event` in
+`state.transfer_pause_events`. Downloads are persisted to the DB so the queue
+survives a restart (see `_persist_download` / `restore_download_queue`); uploads
+are in-memory only. This module owns the create/list/cancel/pause/resume routes
+plus the `_run_download`/`_run_upload` coroutines that actually drive the
+Downloader/Uploader engines and translate their progress into queue updates.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -37,6 +48,8 @@ _MIN_SPEED_SAMPLE_INTERVAL = 0.2  # seconds
 
 
 def _status_key(status: str) -> str:
+    """The bare status word without any detail suffix (e.g. ``error: ...`` ->
+    ``error``), for comparing against the status-set constants above."""
     return status.split(":")[0].strip()
 
 
@@ -59,6 +72,9 @@ async def _persist_download(entry: dict) -> None:
 
 
 def _update_speed(transfer_id: str, entry: dict, done: int) -> None:
+    """Update `entry["speed"]` (bytes/sec) from the latest byte count, using a
+    minimum sample interval and low-pass smoothing so it doesn't jitter between
+    chunk callbacks. The first call just seeds the baseline."""
     now = time.monotonic()
     tracker = _speed_trackers.get(transfer_id)
     if tracker is None:
@@ -78,6 +94,7 @@ def _update_speed(transfer_id: str, entry: dict, done: int) -> None:
 
 
 def _finish_speed_tracking(entry: dict, transfer_id: str) -> None:
+    """Zero the displayed speed and drop the tracker when a transfer ends."""
     entry["speed"] = 0.0
     _speed_trackers.pop(transfer_id, None)
 
@@ -98,11 +115,16 @@ def _claim_unique_path(directory: Path, filename: str) -> Path:
 
 @router.get("/transfers")
 async def list_transfers():
+    """Every current transfer's progress dict (the initial UI snapshot; live
+    updates then arrive over the WebSocket)."""
     return list(state.active_transfers.values())
 
 
 @router.delete("/transfers/{transfer_id}")
 async def cancel_transfer(transfer_id: str):
+    """Remove a transfer at the user's request. Cancels its live task (whose
+    cleanup deletes the partial file and DB row), or tears it down directly if
+    it already finished. A completed download's file is kept. 404 if unknown."""
     entry = state.active_transfers.get(transfer_id)
     if entry is None:
         raise HTTPException(404, "No such transfer")
@@ -133,6 +155,8 @@ async def cancel_transfer(transfer_id: str):
 
 @router.post("/transfers/{transfer_id}/pause")
 async def pause_transfer(transfer_id: str):
+    """Pause a running transfer (clears its pause event so new chunk work
+    blocks). 400 if it isn't currently running."""
     entry = state.active_transfers.get(transfer_id)
     event = state.transfer_pause_events.get(transfer_id)
     if entry is None or event is None or _status_key(entry["status"]) not in ACTIVE_STATUS_KEYS:
@@ -147,6 +171,9 @@ async def pause_transfer(transfer_id: str):
 
 @router.post("/transfers/{transfer_id}/resume")
 async def resume_transfer(transfer_id: str):
+    """Resume a transfer: un-pause a live one, or restart a failed/idle download
+    from its on-disk prefix (one with no live task, e.g. after a restart). 404
+    if unknown, 400 if it's neither paused nor restartable."""
     entry = state.active_transfers.get(transfer_id)
     if entry is None:
         raise HTTPException(404, "No such transfer")
@@ -168,6 +195,7 @@ async def resume_transfer(transfer_id: str):
 
 @router.post("/transfers/pause-all")
 async def pause_all_transfers():
+    """Pause every currently-running transfer. Returns the ids paused."""
     paused = []
     for transfer_id, entry in list(state.active_transfers.items()):
         event = state.transfer_pause_events.get(transfer_id)
@@ -212,6 +240,8 @@ async def resume_all_transfers():
 
 @router.post("/transfers/stop-all")
 async def stop_all_transfers():
+    """Cancel every live transfer task. Partial files/DB rows are kept (this is
+    a stop, not a removal), so they can be resumed. Returns the ids stopped."""
     stopped = list(state.transfer_tasks.keys())
     for task in state.transfer_tasks.values():
         task.cancel()
@@ -220,6 +250,9 @@ async def stop_all_transfers():
 
 @router.post("/transfers/clear-finished")
 async def clear_finished_transfers():
+    """Remove every transfer in a terminal state (done/cancelled/error/mac
+    mismatch) from the queue and DB, deleting the partial files of the failed
+    ones (a completed download's file is kept). Returns the ids removed."""
     removed = [tid for tid, entry in state.active_transfers.items() if _status_key(entry["status"]) in TERMINAL_STATUS_KEYS]
     for tid in removed:
         entry = state.active_transfers.pop(tid, None)
@@ -259,6 +292,9 @@ async def classify_links(links: str = Form(...)):
 
 
 async def _restart_download(transfer_id: str) -> None:
+    """Relaunch a failed/idle download under its existing id, resuming from any
+    whole-chunk prefix already on disk (a MAC-mismatch file is discarded first,
+    since its bytes are corrupt)."""
     entry = state.active_transfers[transfer_id]
     path = entry.get("path")
 
@@ -299,6 +335,9 @@ def _find_download_by_link(link: str) -> dict | None:
 
 @router.post("/downloads")
 async def create_download(link: str = Form(...)):
+    """Queue a MEGA *file* link for download and kick off its task. De-duped by
+    link: an existing active/queued/done copy is returned untouched, a
+    failed/idle one is retried in place. 400 for an invalid or folder link."""
     try:
         parsed = parse_mega_link(link)
     except ValueError as exc:
@@ -340,6 +379,12 @@ async def create_download(link: str = Form(...)):
 
 
 async def _run_download(transfer_id: str, link: str, resume_path: str | None = None) -> None:
+    """Background task that runs one download end to end: resolve metadata, claim
+    a destination path, wait for a concurrency slot, then drive the Downloader,
+    updating the queue entry's status/progress and broadcasting throughout.
+    `resume_path` continues an existing file instead of claiming a new name.
+    Sets the terminal status (done/mac_mismatch/cancelled/error) and handles the
+    partial-file/DB cleanup in its finally block."""
     entry = state.active_transfers[transfer_id]
     # No proxy for this MegaAPI instance: it's only used for metadata /
     # download-URL lookups (here and reused internally by Downloader.run),
@@ -461,6 +506,9 @@ async def restore_download_queue() -> None:
 
 @router.post("/uploads")
 async def create_upload(email: str = Form(...), file_path: str = Form(...), parent_node: str | None = Form(None)):
+    """Queue a local file for upload to `email`'s account (into `parent_node`, or
+    the account root) and start its task. 400 if there's no active session for
+    that account or the file doesn't exist."""
     api = state.active_sessions.get(email)
     if api is None:
         raise HTTPException(400, f"No active session for {email} -- log in first")
@@ -484,6 +532,10 @@ async def create_upload(email: str = Form(...), file_path: str = Form(...), pare
 
 
 async def _run_upload(transfer_id: str, api: MegaAPI, file_path: str, parent_node: str) -> None:
+    """Background task that runs one upload: wait for a slot, drive the Uploader,
+    and update the queue entry's status/progress. Sets the terminal status
+    (done/cancelled/error) in its finally block. Uploads aren't persisted, so
+    there's no DB/partial-file cleanup here (unlike `_run_download`)."""
     entry = state.active_transfers[transfer_id]
     pause_event = asyncio.Event()
     pause_event.set()

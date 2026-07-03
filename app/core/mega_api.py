@@ -34,27 +34,37 @@ _BARE_ERROR_RE = re.compile(r"^\[?(-[0-9]+)\]?$")
 
 
 def _gen_id(length: int) -> str:
+    """Random alphanumeric id (request id / sequence seed)."""
     return "".join(secrets.choice(_ID_CHARS) for _ in range(length))
 
 
 def wait_time_exp_backoff(retry_count: int) -> int:
+    """Backoff delay in seconds for the `retry_count`-th retry, capped at
+    EXP_BACKOFF_MAX_WAIT_TIME."""
     wait = (EXP_BACKOFF_BASE**retry_count) * EXP_BACKOFF_SECS_RETRY
     return min(wait, EXP_BACKOFF_MAX_WAIT_TIME)
 
 
 def check_mega_error(data: str) -> int:
+    """Return the negative error code if the response body is a bare error
+    (e.g. ``-9`` or ``[-9]``), else 0. MEGA signals errors either as a bare
+    number or as a normal JSON array whose elements are negative."""
     m = _BARE_ERROR_RE.match(data.strip())
     return int(m.group(1)) if m else 0
 
 
 @dataclass
 class Quota:
+    """Account storage usage: bytes `used_storage` of `max_storage`."""
     used_storage: int
     max_storage: int
 
 
 @dataclass
 class FolderNode:
+    """One decrypted node from a public folder listing. `parent` links to
+    another node's handle (flat map, not a nested tree); `key` is the node's
+    own decrypted key as url-base64 (32 bytes for files, 16 for folders)."""
     handle: str
     node_type: int  # 0 = file, 1 = folder
     parent: str | None
@@ -65,6 +75,8 @@ class FolderNode:
 
 @dataclass
 class FileMetadata:
+    """Decrypted name/size of a single public file link, plus the `file_key`
+    exactly as it appeared in the link (needed later to decrypt the data)."""
     name: str
     size: int
     file_key: str  # base64url, as it appeared in the link
@@ -111,15 +123,20 @@ class MegaAPI:
         self.last_api_error_code: int = 0
 
     async def aclose(self) -> None:
+        """Close the HTTP client, but only if this instance created it (a
+        caller-supplied shared client is left open for the caller to manage)."""
         if self._owns_client:
             await self._client.aclose()
 
     def _next_seqno(self) -> str:
+        """Next `id` query-param value; MEGA requires a monotonic sequence
+        per session. Safe without a lock: no `await` between read and bump."""
         seq = self._seqno
         self._seqno += 1
         return str(seq)
 
     def _std_params(self) -> dict[str, str]:
+        """Query params sent on every /cs call (app key, optional language)."""
         params = {"ak": self.api_key}
         if self.lang:
             params["lang"] = self.lang
@@ -230,17 +247,24 @@ class MegaAPI:
     # ------------------------------------------------------------------
 
     async def read_account_version_and_salt(self, email: str) -> None:
+        """Fetch the account's key-derivation version (1 = legacy, 2+ = PBKDF2)
+        and PBKDF2 salt, needed to pick the right login-key derivation."""
         res = await self._raw_request([{"a": "us0", "user": email}])
         self.account_version = res[0].get("v", 1)
         salt_b64 = res[0].get("s")
         self.salt = crypto.url_base64_to_bin(salt_b64) if salt_b64 else None
 
     async def check_2fa(self, email: str) -> bool:
+        """True if this account has two-factor auth enabled (so login must
+        supply a pincode)."""
         email = email.split("#")[0].strip()
         res = await self._raw_request([{"a": "mfag", "e": email}])
         return res[0] == 1
 
     async def login(self, email: str, password: str, pincode: str | None = None) -> None:
+        """Log in with email + password, deriving the login key by the account's
+        version (v1 AES rounds vs v2 PBKDF2). Supply `pincode` for 2FA accounts.
+        On success the session is fully warmed (sid set, node tree fetched)."""
         self.full_email = email
         self.email = email.split("#")[0].strip()
 
@@ -256,6 +280,8 @@ class MegaAPI:
         await self._real_login(pincode)
 
     async def fast_login(self, email: str, password_aes: list[int], user_hash: str, pincode: str | None = None) -> None:
+        """Log in from a previously derived key + user hash (e.g. restored from
+        the account store), skipping the password-hashing step of `login`."""
         self.full_email = email
         self.email = email.split("#")[0].strip()
         if self.account_version == -1:
@@ -265,6 +291,10 @@ class MegaAPI:
         await self._real_login(pincode)
 
     async def _real_login(self, pincode: str | None) -> None:
+        """Send the `us` login command and unpack the response: decrypt the
+        master key with the password-AES key, the RSA private key with the
+        master key, then RSA-decrypt the session id. Finishes by fetching the
+        node tree. Raises MegaAPIException if the response is missing fields."""
         cmd: dict = {"a": "us", "user": self.email, "uh": self.user_hash}
         if pincode:
             cmd["mfa"] = pincode
@@ -294,6 +324,9 @@ class MegaAPI:
     # ------------------------------------------------------------------
 
     async def fetch_nodes(self) -> None:
+        """Load the account's node tree, recording the special container
+        handles (root/Cloud Drive = type 2, inbox = 3, trash = 4) used as
+        upload parents and destinations."""
         res = await self._raw_request([{"a": "f", "c": 1}])
         for element in res[0].get("f", []):
             file_type = element.get("t")
@@ -305,6 +338,7 @@ class MegaAPI:
                 self.trashbin_id = element.get("h")
 
     async def get_quota(self) -> Quota | None:
+        """Current storage usage/limit, or None if MEGA omitted the fields."""
         res = await self._raw_request([{"a": "uq", "xfer": 1, "strg": 1}])
         node = res[0]
         if "cstrg" not in node or "mstrg" not in node:
@@ -316,6 +350,9 @@ class MegaAPI:
     # ------------------------------------------------------------------
 
     async def get_mega_file_metadata(self, link: str) -> FileMetadata:
+        """Resolve a public *file* link to its decrypted name and size. Uses the
+        `n=` folder-scoped form when the link points inside a public folder.
+        Raises ValueError for a folder link (browse it to pick a file)."""
         parsed = parse_mega_link(link)
         if parsed.kind == "folder":
             raise ValueError("This is a folder link, not a file link -- browse it to pick an individual file to download.")
@@ -338,6 +375,9 @@ class MegaAPI:
         return FileMetadata(name=name, size=size, file_key=parsed.key)
 
     async def get_mega_file_download_url(self, link: str) -> str:
+        """Ask MEGA for the temporary storage-node URL to download a public
+        file link's data from (the `g=1` form). Raises for a folder link, or
+        MegaAPIException(-101) if no URL comes back."""
         parsed = parse_mega_link(link)
         if parsed.kind == "folder":
             raise ValueError("This is a folder link, not a file link -- browse it to pick an individual file to download.")
@@ -359,6 +399,8 @@ class MegaAPI:
     # ------------------------------------------------------------------
 
     async def init_upload_file(self, file_size: int) -> str:
+        """Begin an upload of `file_size` bytes; returns the storage-node base
+        URL to POST the encrypted chunks to."""
         res = await self._raw_request([{"a": "u", "s": file_size}])
         return res[0]["p"]
 
@@ -402,6 +444,8 @@ class MegaAPI:
         return res[0]
 
     async def create_dir(self, name: str, parent_node: str, node_key: bytes, master_key: bytes) -> dict:
+        """Create a folder `name` under `parent_node`, with its 16-byte
+        `node_key` wrapped by `master_key`. Returns the new node record."""
         enc_att = crypto.encrypt_attr(json.dumps({"n": name}).encode("utf-8"), node_key)
         enc_node_key = crypto.encrypt_key(node_key, master_key)
         cmd = {
@@ -414,11 +458,14 @@ class MegaAPI:
         return res[0]
 
     async def get_public_file_link(self, node: str, node_key: bytes) -> str:
+        """Make a node publicly shareable and return its legacy `#!` file link
+        (the node key is appended so the recipient can decrypt)."""
         res = await self._raw_request([{"a": "l", "n": node}])
         file_id = res[0]
         return f"https://mega.nz/#!{file_id}!{crypto.bin_to_url_base64(node_key)}"
 
     async def get_public_folder_link(self, node: str, node_key: bytes) -> str:
+        """As `get_public_file_link`, but for a folder (legacy `#F!` link)."""
         res = await self._raw_request([{"a": "l", "n": node, "i": self.req_id}])
         folder_id = res[0]
         return f"https://mega.nz/#F!{folder_id}!{crypto.bin_to_url_base64(node_key)}"

@@ -25,11 +25,13 @@ FFPROBE_TIMEOUT_SECS = 30
 
 
 def is_video_file(filename: str) -> bool:
+    """True if the filename's MIME type is a video type."""
     content_type, _ = mimetypes.guess_type(filename)
     return bool(content_type and content_type.startswith("video/"))
 
 
 def is_image_file(filename: str) -> bool:
+    """True if the filename's MIME type is an image type."""
     content_type, _ = mimetypes.guess_type(filename)
     return bool(content_type and content_type.startswith("image/"))
 
@@ -51,6 +53,7 @@ def create_image_thumbnail(filename: str) -> str:
 
 
 def _ffprobe_duration_seconds(filename: str, ffprobe_path: str) -> float | None:
+    """Video duration in seconds via ffprobe, or None if it fails/isn't parseable."""
     try:
         result = subprocess.run(
             [ffprobe_path, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filename],
@@ -103,6 +106,8 @@ def create_video_thumbnail(filename: str, ffmpeg_path: str = "ffmpeg", ffprobe_p
 
 
 def create_thumbnail(filename: str) -> str | None:
+    """Dispatch to the video or image thumbnailer by file type; None for
+    anything else (or when a thumbnail can't be produced)."""
     if is_video_file(filename):
         return create_video_thumbnail(filename)
     if is_image_file(filename):

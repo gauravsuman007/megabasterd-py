@@ -16,12 +16,19 @@ _GEOMETRIC_OFFSETS_KB = (0, 128, 384, 768, 1280, 1920, 2688)
 
 
 def calculate_chunk_offset(chunk_id: int, size_multi: int = 1) -> int:
+    """Byte offset at which the 1-indexed chunk `chunk_id` begins.
+
+    The first 7 chunks use the fixed geometric offsets; from chunk 8 on they
+    step by a flat 1MB (times `size_multi`, the multi-slot size factor).
+    """
     if 1 <= chunk_id <= 7:
         return _GEOMETRIC_OFFSETS_KB[chunk_id - 1] * 1024
     return (3584 + (chunk_id - 8) * 1024 * size_multi) * 1024
 
 
 def calculate_chunk_size(chunk_id: int, file_size: int, offset: int, size_multi: int = 1) -> int:
+    """Length in bytes of chunk `chunk_id`, clamped so the final chunk stops
+    exactly at `file_size` (the tail chunk is usually shorter than the rest)."""
     if 1 <= chunk_id <= 7:
         chunk_size = chunk_id * 128 * 1024
     else:
@@ -33,6 +40,9 @@ def calculate_chunk_size(chunk_id: int, file_size: int, offset: int, size_multi:
 
 
 def gen_chunk_url(file_url: str, file_size: int, offset: int, chunk_size: int) -> str:
+    """Build the storage-node URL for one chunk. MEGA addresses byte ranges by
+    appending ``/offset-end`` to the file URL (its own convention, not an HTTP
+    Range header); the final chunk uses the shorter ``/offset`` form."""
     if offset + chunk_size == file_size:
         return f"{file_url}/{offset}"
     return f"{file_url}/{offset}-{offset + chunk_size - 1}"
@@ -40,6 +50,7 @@ def gen_chunk_url(file_url: str, file_size: int, offset: int, chunk_size: int) -
 
 @dataclass(frozen=True)
 class Chunk:
+    """One chunk of a file: its 1-indexed id, byte `offset`, and `size`."""
     chunk_id: int
     offset: int
     size: int

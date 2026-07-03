@@ -42,12 +42,16 @@ DEFAULT_RECHECK_509_WINDOW = 3600
 
 @dataclass
 class ProxyEntry:
+    """A proxy's live state in the pool: when it was last banned (-1 = never)
+    and whether it's a SOCKS proxy."""
     ban_timestamp: float = -1.0  # -1 == never banned
     is_socks: bool = False
 
 
 @dataclass
 class ParsedProxy:
+    """Result of parsing one proxy line: the ``host:port`` `address`, whether
+    it's SOCKS, and the optional ``b64user:b64pass`` auth trailer."""
     address: str  # "host:port"
     is_socks: bool
     auth: str | None  # "b64user:b64pass", if present
@@ -112,6 +116,9 @@ def parse_proxy_entry(raw: str) -> ParsedProxy | None:
 
 @dataclass
 class RefreshResult:
+    """Outcome of a pool refresh: how many `entries` are now live, how many
+    remote source URLs succeeded/failed, and whether the previous pool was
+    kept because the new parse yielded nothing usable."""
     entries: int
     urls_ok: int
     urls_failed: int
@@ -137,6 +144,14 @@ def parse_proxy_list_addresses(text: str) -> list[tuple[str, bool]]:
 
 
 class SmartProxyManager:
+    """Live proxy pool with banning and selection.
+
+    Holds the configured `_pool` (parsed from the user's list), tracks bans
+    per entry, and hands out one usable proxy at a time via `pick_proxy`.
+    When `verified_pool_provider` is set (diagnostics enabled), reachable
+    proxies from that provider are preferred over the configured pool.
+    """
+
     def __init__(
         self,
         ban_time: int = DEFAULT_BAN_TIME,
@@ -175,19 +190,25 @@ class SmartProxyManager:
     # -- pool introspection -------------------------------------------------
 
     def proxy_count(self) -> int:
+        """Total configured proxies (banned or not)."""
         return len(self._pool)
 
     def count_blocked(self) -> int:
+        """How many configured proxies are currently banned."""
         now = time.time()
         return sum(1 for e in self._pool.values() if self._is_banned(e, now))
 
     def snapshot(self) -> list[tuple[str, str]]:
+        """(address, "socks"|"http") for every configured proxy, for display."""
         return [(addr, "socks" if e.is_socks else "http") for addr, e in self._pool.items()]
 
     def _is_banned(self, entry: ProxyEntry, now: float) -> bool:
+        """True while `entry`'s ban is still within the ban_time window."""
         return entry.ban_timestamp != -1 and entry.ban_timestamp >= now - self.ban_time
 
     def _is_verified_banned(self, address: str, now: float) -> bool:
+        """True while a verified-pool proxy's ban is still active (inf = dropped
+        permanently when ban_time is 0)."""
         ts = self._verified_bans.get(address)
         if ts is None:
             return False
@@ -230,6 +251,10 @@ class SmartProxyManager:
         return None
 
     def block_proxy(self, address: str, cause: str = "") -> None:
+        """Ban a proxy after it failed (e.g. a 509 or connection error). With
+        ban_time == 0 the proxy is dropped outright; otherwise it's marked
+        banned for ban_time seconds. Verified-pool proxies (not in `_pool`)
+        are recorded in a separate ban map so they aren't re-picked at once."""
         entry = self._pool.get(address)
         if entry is not None:
             if self.ban_time == 0:
@@ -289,6 +314,8 @@ class SmartProxyManager:
 
     @staticmethod
     def _merge_entry(line: str, into_pool: dict[str, ProxyEntry], into_auth: dict[str, str]) -> None:
+        """Parse one line and, if valid, add it to the pool/auth maps being
+        built (a no-op for blanks, comments, and malformed lines)."""
         parsed = parse_proxy_entry(line)
         if parsed is None:
             return
@@ -297,6 +324,7 @@ class SmartProxyManager:
             into_auth[parsed.address] = parsed.auth
 
     def get_auth(self, address: str) -> str | None:
+        """The ``b64user:b64pass`` auth trailer for `address`, if it had one."""
         return self._auth.get(address)
 
     def build_proxy_url(self, address: str, is_socks: bool) -> str:

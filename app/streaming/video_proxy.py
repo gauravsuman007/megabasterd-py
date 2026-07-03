@@ -34,11 +34,15 @@ CHUNK_READ_SIZE = 256 * 1024
 
 
 def _guess_content_type(filename: str) -> str:
+    """MIME type from the filename, defaulting to octet-stream."""
     content_type, _ = mimetypes.guess_type(filename)
     return content_type or "application/octet-stream"
 
 
 def _parse_range(range_header: str | None, file_size: int) -> tuple[int, int]:
+    """Parse an HTTP ``Range: bytes=start-end`` header into an inclusive
+    (start, end) byte pair, clamped to the file; missing/blank ends default to
+    the file's bounds. No header means the whole file."""
     if not range_header or not range_header.startswith("bytes="):
         return 0, file_size - 1
     spec = range_header[len("bytes=") :]
@@ -50,6 +54,8 @@ def _parse_range(range_header: str | None, file_size: int) -> tuple[int, int]:
 
 @router.get("/api/stream/info")
 async def stream_info(link: str):
+    """Return a public file link's name, size, and guessed content type, for the
+    player page to set up the <video> element before streaming."""
     # Metadata lookup only, never proxied -- see _run_download's comment.
     api = MegaAPI(api_key=state.mega_api_key, proxy_manager=None)
     try:
@@ -61,6 +67,11 @@ async def stream_info(link: str):
 
 @router.get("/stream")
 async def stream_video(request: Request, link: str):
+    """Stream a public MEGA file's decrypted bytes, honoring Range requests so a
+    browser can seek. Fetches from the nearest 16-byte-aligned offset, decrypts
+    on the fly with AES-CTR, and drops the few leading bytes to land exactly on
+    the requested start (see module docstring). Returns 206 for a ranged request,
+    200 for the whole file, 416 for an invalid range."""
     # Metadata lookup only, never proxied -- see _run_download's comment.
     # (The actual streamed bytes below already go direct, unproxied, too.)
     api = MegaAPI(api_key=state.mega_api_key, proxy_manager=None)

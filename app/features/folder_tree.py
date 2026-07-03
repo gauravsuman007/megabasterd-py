@@ -13,6 +13,8 @@ from app.core.mega_api import FolderNode
 
 @dataclass
 class TreeNode:
+    """One node in the nested folder tree: its handle/name/key, whether it's a
+    folder, its `size` (0 for folders), and its `children` (empty for files)."""
     handle: str
     name: str
     is_folder: bool
@@ -76,12 +78,15 @@ def build_tree(nodes: dict[str, FolderNode]) -> list[TreeNode]:
 
 
 def file_download_link(node: TreeNode, folder_id: str) -> str:
+    """Build the folder-scoped download link for a file node inside the public
+    folder `folder_id`. Raises ValueError if `node` is a folder."""
     if node.is_folder:
         raise ValueError(f"{node.name!r} is a folder, not a file")
     return build_scoped_file_link(node.handle, node.key, folder_id)
 
 
 def total_size(tree: list[TreeNode]) -> int:
+    """Sum of every file's size in the tree, recursing into folders."""
     total = 0
     for node in tree:
         total += node.size if not node.is_folder else total_size(node.children)

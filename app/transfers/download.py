@@ -40,16 +40,25 @@ ProgressCallback = Callable[[int, int], None]
 
 @dataclass
 class DownloadResult:
+    """Outcome of a completed download: output `path`, total `size`, and whether
+    the recomputed file MAC matched the one embedded in the link key."""
     path: str
     size: int
     mac_verified: bool
 
 
 class ChunkFetchError(Exception):
-    pass
+    """A chunk came back the wrong size (short/over-read); triggers a retry."""
 
 
 class Downloader:
+    """Downloads one MEGA file: fetches chunks concurrently (bounded by `slots`),
+    decrypts each with AES-CTR, and writes them to `dest_path` in strict chunk
+    order while folding them into the file MAC. Supports pause (via a shared
+    `pause_event`), partial-file resume, and SmartProxy rerouting on HTTP 509.
+    Drive it by awaiting `run()`.
+    """
+
     def __init__(
         self,
         api: MegaAPI,
@@ -102,6 +111,9 @@ class Downloader:
         self._proxy_lock = asyncio.Lock()
 
     async def _switch_proxy(self, cause: str) -> None:
+        """Ban the current proxy (if any) and route this download through a new
+        one, shared by all its chunk workers. Serialized by `_proxy_lock` so
+        concurrent 509s don't thrash. Raises if no proxy is available."""
         async with self._proxy_lock:
             if self._proxy_address is not None:
                 self.proxy_manager.block_proxy(self._proxy_address, cause)
@@ -127,6 +139,10 @@ class Downloader:
         chunk: Chunk,
         on_bytes: Callable[[int], None] | None = None,
     ) -> bytes:
+        """Fetch one chunk's ciphertext, streaming it (so progress can be
+        reported as bytes land), retrying with backoff on transient errors and
+        rerouting through a new proxy on 509. `on_bytes(n)` reports in-flight
+        progress. Raises after MAX_CHUNK_RETRIES."""
         url = gen_chunk_url(download_url, file_size, chunk.offset, chunk.size)
         attempt = 0
         while True:
@@ -172,6 +188,14 @@ class Downloader:
                 await asyncio.sleep(wait_time_exp_backoff(attempt))
 
     async def run(self) -> DownloadResult:
+        """Run the whole download to completion and return a `DownloadResult`.
+
+        Resolves metadata + download URL, derives the key/nonce/expected MAC,
+        replays any resumable on-disk prefix, then fetches the remaining chunks
+        concurrently while a single writer loop drains them in order to disk and
+        into the MAC. A `claim_sem` caps how many chunks are buffered at once so
+        a straggler can't pile up plaintext in memory. Cancels in-flight fetches
+        on any early exit."""
         owns_client = self._owns_client
         client = self._client or httpx.AsyncClient()
         self._client = client

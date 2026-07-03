@@ -21,6 +21,13 @@ from dataclasses import dataclass
 
 @dataclass
 class MegaLink:
+    """A parsed MEGA link, normalized across the legacy and modern URL shapes.
+
+    `handle` is the node id and `key` its base64url-encoded key. `folder_id`
+    is set only for a file located inside a public folder (it becomes the
+    `&n=` param on the download call); it is None for standalone file/folder
+    links.
+    """
     kind: str  # "file" or "folder"
     handle: str
     key: str
@@ -50,6 +57,12 @@ def new_links_to_legacy(data: str) -> str:
 
 
 def parse_mega_link(link: str) -> MegaLink:
+    """Parse any supported MEGA link into a `MegaLink`.
+
+    Modern URLs are first rewritten to the legacy fragment form, then matched
+    most-specific-first (folder-scoped file, folder file, folder, file).
+    Raises ValueError if nothing matches.
+    """
     link = new_links_to_legacy(link.strip())
 
     if m := _LEGACY_FOLDER_SCOPED_FILE.search(link):

@@ -27,20 +27,30 @@ class LockedError(Exception):
 
 
 class AccountStore:
+    """Reads/writes MEGA credentials, transparently encrypting them at rest when
+    a master password is set. Holds the derived master key in memory only while
+    unlocked; plaintext reads/writes raise `LockedError` while locked."""
+
     def __init__(self, db: Database):
         self.db = db
         self._master_key: bytes | None = None
 
     async def is_encrypted(self) -> bool:
+        """True if a master password has been configured."""
         return await self.db.get_setting("master_pass_hash") is not None
 
     async def is_locked(self) -> bool:
+        """True if encrypted but not currently unlocked (no key in memory)."""
         return await self.is_encrypted() and self._master_key is None
 
     def lock(self) -> None:
+        """Forget the in-memory master key, re-locking the store."""
         self._master_key = None
 
     async def unlock(self, password: str) -> bool:
+        """Verify `password` against the stored hash and, on success, cache the
+        derived key so plaintext access works. Returns False on wrong password
+        (constant-time compared) or if no master password is set."""
         salt_b64 = await self.db.get_setting("master_pass_salt")
         stored_hash = await self.db.get_setting("master_pass_hash")
         if salt_b64 is None or stored_hash is None:
@@ -105,6 +115,9 @@ class AccountStore:
         self._master_key = new_key
 
     async def persist_mega_login(self, email: str, plaintext_password: str, password_aes_words: list[int], user_hash: str) -> None:
+        """Save a successful login's credentials, encrypting them at rest if a
+        master password is unlocked (else stored plainly). Raises LockedError if
+        the store is encrypted but locked."""
         if await self.is_locked():
             raise LockedError("account store is locked")
 
@@ -122,6 +135,9 @@ class AccountStore:
         await self.db.upsert_mega_account(email, stored_password, stored_password_aes, stored_user_hash)
 
     async def list_mega_accounts(self) -> dict[str, dict]:
+        """All stored accounts as email -> {password, password_aes (int words),
+        user_hash}, decrypting on the fly when unlocked. Raises LockedError if
+        the store is locked."""
         if await self.is_locked():
             raise LockedError("account store is locked")
 
@@ -146,14 +162,17 @@ class AccountStore:
         return result
 
     async def delete_mega_account(self, email: str) -> None:
+        """Remove a stored account (and its cached session) by email."""
         await self.db.delete_mega_account(email)
 
 
 def _constant_time_eq(a: str, b: str) -> bool:
+    """Constant-time string compare, to avoid leaking the master-hash via timing."""
     import hmac
 
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 
 def _looks_url_b64(s: str) -> bool:
+    """Heuristic: does `s` use URL-base64's '-'/'_' alphabet (vs standard)?"""
     return "-" in s or "_" in s

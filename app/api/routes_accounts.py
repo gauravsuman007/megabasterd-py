@@ -1,3 +1,6 @@
+"""HTTP routes for MEGA account management: listing, 2FA check, login, delete,
+and the master-password lock/unlock + set/change endpoints. Logged-in sessions
+are kept warm in `state.active_sessions` so later requests skip re-login."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Form, HTTPException
@@ -12,6 +15,8 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 @router.get("")
 async def list_accounts():
+    """List stored accounts with their active-session flag. If the store is
+    locked, returns `locked: True` and an empty list instead."""
     encrypted = await state.account_store.is_encrypted()
     if await state.account_store.is_locked():
         return {"locked": True, "encrypted": encrypted, "accounts": []}
@@ -26,6 +31,8 @@ async def list_accounts():
 
 @router.post("/check-2fa")
 async def check_2fa(email: str = Form(...)):
+    """Report whether an account needs a 2FA pincode, so the login form can
+    show the pincode field before submitting credentials."""
     api = MegaAPI(api_key=state.mega_api_key, proxy_manager=state.active_proxy_manager())
     try:
         requires = await api.check_2fa(email)
@@ -36,6 +43,9 @@ async def check_2fa(email: str = Form(...)):
 
 @router.post("/login")
 async def login(email: str = Form(...), password: str = Form(...), pincode: str | None = Form(None)):
+    """Log in, persist the credentials (encrypted if a master password is set),
+    keep the session warm, and return the account's root id + quota. 400 on bad
+    credentials/2FA, 423 if the store is locked."""
     if await state.account_store.is_locked():
         raise HTTPException(423, "Account store is locked -- unlock with the master password first")
 
@@ -64,6 +74,8 @@ async def login(email: str = Form(...), password: str = Form(...), pincode: str 
 
 @router.delete("/{email}")
 async def delete_account(email: str):
+    """Remove an account: close its live session (if any) and delete its stored
+    credentials/session."""
     session = state.active_sessions.pop(email, None)
     if session is not None:
         await session.aclose()
@@ -73,6 +85,7 @@ async def delete_account(email: str):
 
 @router.post("/master-password/unlock")
 async def unlock_master_password(password: str = Form(...)):
+    """Unlock the encrypted account store for this process. 400 if wrong."""
     ok = await state.account_store.unlock(password)
     if not ok:
         raise HTTPException(400, "Incorrect master password")
@@ -81,6 +94,8 @@ async def unlock_master_password(password: str = Form(...)):
 
 @router.post("/master-password")
 async def set_master_password(password: str | None = Form(None)):
+    """Set, change, or (blank) remove the master password, re-encrypting stored
+    accounts in place. 423 if the store is locked."""
     try:
         await state.account_store.set_master_password(password or None)
     except LockedError as exc:

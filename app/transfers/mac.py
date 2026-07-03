@@ -18,6 +18,10 @@ from app.core import crypto
 
 
 class FileMacGenerator:
+    """Accumulates the file's CBC-MAC as chunks are fed in, in ascending chunk
+    order (see module docstring). Feed each MEGA chunk to `process_chunk`, then
+    read `meta_mac`/`meta_mac_bytes` once the whole file has passed through."""
+
     def __init__(self, key: bytes, nonce_words: tuple[int, int]):
         self.key = key
         self._iv0, self._iv1 = nonce_words
@@ -30,6 +34,9 @@ class FileMacGenerator:
         self._cipher = AES.new(key, AES.MODE_ECB)
 
     def process_chunk(self, plaintext: bytes) -> None:
+        """Fold one whole chunk's plaintext into the running file MAC. Each
+        chunk's MAC starts from the file nonce, CBC-chains over its 16-byte
+        blocks (zero-padded tail), and is then XOR-folded into `file_mac`."""
         chunk_mac = [self._iv0, self._iv1, self._iv0, self._iv1]
 
         for i in range(0, len(plaintext), 16):
@@ -45,8 +52,10 @@ class FileMacGenerator:
 
     @property
     def meta_mac(self) -> tuple[int, int]:
+        """The 2-word meta MAC (file MAC folded to 8 bytes) MEGA stores/verifies."""
         return (self.file_mac[0] ^ self.file_mac[1], self.file_mac[2] ^ self.file_mac[3])
 
     @property
     def meta_mac_bytes(self) -> bytes:
+        """`meta_mac` as 8 raw bytes."""
         return crypto.i32a2bin(list(self.meta_mac))

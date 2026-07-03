@@ -58,12 +58,20 @@ def build_node_key(ul_key_words: list[int], meta_mac: tuple[int, int]) -> list[i
 
 @dataclass
 class UploadResult:
+    """Outcome of a completed upload: the new node's `node_handle` (if MEGA
+    returned one), the file `size`, and the raw `finish_upload_file` response."""
     node_handle: str | None
     size: int
     raw_response: dict
 
 
 class Uploader:
+    """Uploads one local file to MEGA: encrypts chunks with a fresh per-file key
+    and POSTs them concurrently (bounded by `slots`), folds them into the file
+    MAC in order, then registers the node with the obfuscated key. Mirrors
+    `Downloader` (pause via `pause_event`, SmartProxy 509 rerouting). Await `run()`.
+    """
+
     def __init__(
         self,
         api: MegaAPI,
@@ -102,6 +110,9 @@ class Uploader:
         self._proxy_lock = asyncio.Lock()
 
     async def _switch_proxy(self, cause: str) -> None:
+        """Ban the current proxy and route this upload through a new one, shared
+        by all its chunk workers (see Downloader._switch_proxy). Raises if none
+        is available."""
         async with self._proxy_lock:
             if self._proxy_address is not None:
                 self.proxy_manager.block_proxy(self._proxy_address, cause)
@@ -121,6 +132,9 @@ class Uploader:
                 raise RuntimeError("SmartProxy: no proxy available to route around HTTP 509")
 
     async def _post_chunk(self, url: str, data: bytes) -> str:
+        """POST one encrypted chunk, retrying with backoff on transient errors
+        and rerouting through a new proxy on 509. Returns the response text
+        (the completion handle on the last chunk, empty otherwise)."""
         attempt = 0
         while True:
             client = self._proxy_client or self._client
@@ -143,6 +157,14 @@ class Uploader:
                 await asyncio.sleep(wait_time_exp_backoff(attempt))
 
     async def run(self) -> UploadResult:
+        """Run the whole upload and return an `UploadResult`.
+
+        Reserves an upload URL, generates the per-file key, then reads/encrypts/
+        POSTs chunks concurrently while a MAC loop consumes them in order (a
+        `claim_sem` caps how many are buffered at once). Once every chunk is in
+        and the completion handle is known, computes the meta MAC, builds the
+        obfuscated node key, and registers the node. Cancels in-flight POSTs on
+        any early exit."""
         owns_client = self._owns_client
         client = self._client or httpx.AsyncClient()
         self._client = client
@@ -253,6 +275,7 @@ class Uploader:
                 await client.aclose()
 
     def _read_chunk(self, chunk: Chunk) -> bytes:
+        """Read one chunk's plaintext from the source file (runs in a thread)."""
         with open(self.file_path, "rb") as f:
             f.seek(chunk.offset)
             return f.read(chunk.size)

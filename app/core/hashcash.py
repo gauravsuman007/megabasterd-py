@@ -17,6 +17,9 @@ TOKEN_REPEAT = 262144
 
 
 def _threshold(easiness: int) -> int:
+    """Decode the `easiness` byte into the numeric threshold the SHA-256 prefix
+    must fall under. Lower threshold = more work; the exact bit-twiddling is
+    MEGA's, reproduced verbatim from the Java solver."""
     return (((easiness & 63) << 1) + 1) << ((easiness >> 6) * 7 + 3)
 
 

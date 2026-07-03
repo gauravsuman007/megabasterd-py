@@ -18,6 +18,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 async def _load_smartproxy_settings() -> None:
+    """Restore SmartProxy config from the DB into `state` on startup, refreshing
+    the live pool from the saved list if SmartProxy is enabled."""
     mgr = state.proxy_manager
     state.smart_proxy_enabled = (await state.db.get_setting("use_smart_proxy")) == "yes"
     mgr.ban_time = int(await state.db.get_setting("smartproxy_ban_time") or mgr.ban_time)
@@ -33,6 +35,8 @@ async def _load_smartproxy_settings() -> None:
 
 
 async def _load_transfer_settings() -> None:
+    """Restore transfer-related settings (concurrency limits, default slots, MAC
+    verification, download dir, custom API key) from the DB into `state`."""
     max_downloads = await state.db.get_setting("max_concurrent_downloads")
     if max_downloads:
         await state.download_slots.set_limit(int(max_downloads))
@@ -53,6 +57,10 @@ async def _load_transfer_settings() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """App startup/shutdown. On startup: open the DB, load all settings, and
+    restore the persisted download queue (last, so relaunched downloads see the
+    fully-loaded settings). On shutdown: flag the shutdown, stop background
+    tasks, and close all sessions and the DB."""
     await state.db.connect()
     await _load_smartproxy_settings()
     await _load_transfer_settings()
@@ -97,14 +105,17 @@ def _asset_version() -> str:
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    """Render the main page (downloads/uploads/transfers)."""
     return templates.TemplateResponse(request, "index.html", {"asset_version": _asset_version()})
 
 
 @app.get("/watch", response_class=HTMLResponse)
 async def watch(request: Request):
+    """Render the video-streaming page."""
     return templates.TemplateResponse(request, "watch.html", {"asset_version": _asset_version()})
 
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
+    """Render the settings page."""
     return templates.TemplateResponse(request, "settings.html", {"asset_version": _asset_version()})
