@@ -10,6 +10,7 @@ through temp files when everything lives in one process/event loop).
 from __future__ import annotations
 
 import asyncio
+import glob
 import os
 import time
 from collections.abc import Callable
@@ -51,12 +52,28 @@ class ChunkFetchError(Exception):
     """A chunk came back the wrong size (short/over-read); triggers a retry."""
 
 
+def _read_and_remove(path: str) -> bytes:
+    """Read a staged chunk's plaintext back from its temp file and delete the
+    file (RAM-saver mode). Runs in a worker thread off the event loop."""
+    with open(path, "rb") as tf:
+        data = tf.read()
+    os.remove(path)
+    return data
+
+
 class Downloader:
     """Downloads one MEGA file: fetches chunks concurrently (bounded by `slots`),
     decrypts each with AES-CTR, and writes them to `dest_path` in strict chunk
     order while folding them into the file MAC. Supports pause (via a shared
     `pause_event`), partial-file resume, and SmartProxy rerouting on HTTP 509.
     Drive it by awaiting `run()`.
+
+    When `ram_saver` is set, out-of-order chunks are decrypted straight to
+    per-chunk temp files (streamed, never held whole in memory) and re-read in
+    order by the writer, instead of buffering their plaintext in RAM. This
+    keeps peak memory flat as slots/concurrent-downloads climb, at the cost of
+    writing each chunk to disk twice (temp + final). See the "RAM saver"
+    Advanced setting.
     """
 
     def __init__(
@@ -72,6 +89,7 @@ class Downloader:
         proxy_manager: SmartProxyManager | None = None,
         pause_event: asyncio.Event | None = None,
         resume: bool = False,
+        ram_saver: bool = False,
     ):
         self.api = api
         self.link = link
@@ -89,6 +107,11 @@ class Downloader:
         # (see routes_transfers._claim_unique_path), so resume=False can't
         # accidentally clobber-vs-resume the wrong file.
         self.resume = resume
+        # See the class docstring: stage out-of-order chunks on disk instead of
+        # in RAM. Opt-in (Advanced > RAM saver) -- only pays off at high
+        # slots/concurrency, where the in-RAM reorder buffer would otherwise
+        # grow as slots * chunk_size * concurrent_downloads.
+        self.ram_saver = ram_saver
 
         # Cleared to pause: new chunk fetches block right after claiming a
         # slot (see `fetch` below) instead of starting real work, while
@@ -187,6 +210,79 @@ class Downloader:
                     raise
                 await asyncio.sleep(wait_time_exp_backoff(attempt))
 
+    async def _fetch_range_to_file(
+        self,
+        download_url: str,
+        file_size: int,
+        chunk: Chunk,
+        tmp_path: str,
+        aes_key: bytes,
+        nonce_bytes: bytes,
+        on_bytes: Callable[[int], None] | None = None,
+    ) -> None:
+        """RAM-saver variant of `_fetch_range`: stream the chunk's ciphertext,
+        CTR-decrypt it block by block, and write the plaintext straight to
+        `tmp_path` -- so a whole chunk's plaintext is never resident in memory.
+        Same backoff/509-reroute behaviour; the temp file is re-truncated (via
+        ``wb``) and the CTR cipher re-seeded at the start of every attempt so a
+        retried chunk can't concatenate a torn partial onto a fresh one."""
+        url = gen_chunk_url(download_url, file_size, chunk.offset, chunk.size)
+        attempt = 0
+        while True:
+            client = self._proxy_client or self._client
+            try:
+                need_switch = False
+                written = 0
+                # Fresh per-attempt cipher: CTR is a stream cipher, so feeding
+                # the arbitrarily-sized blocks aiter_bytes yields, in order, is
+                # equivalent to decrypting the whole chunk at once.
+                cipher = crypto.new_ctr_cipher(aes_key, nonce_bytes, chunk.offset // 16)
+                with open(tmp_path, "wb") as tf:
+                    async with client.stream("GET", url, timeout=60.0) as resp:
+                        if resp.status_code == 509 and self.proxy_manager is not None:
+                            need_switch = True  # switch after the stream closes (see _fetch_range)
+                        else:
+                            resp.raise_for_status()
+                            if on_bytes is not None:
+                                on_bytes(0)  # reset this chunk's in-flight count for a fresh attempt
+                            async for block in resp.aiter_bytes():
+                                tf.write(cipher.encrypt(block))  # CTR decrypt straight to disk
+                                written += len(block)
+                                if on_bytes is not None:
+                                    on_bytes(written)
+                if need_switch:
+                    await self._switch_proxy("HTTP 509")
+                    continue
+                if written != chunk.size:
+                    raise ChunkFetchError(f"chunk {chunk.chunk_id}: expected {chunk.size} bytes, got {written}")
+                return
+            except httpx.HTTPStatusError:
+                attempt += 1
+                if attempt >= MAX_CHUNK_RETRIES:
+                    raise
+                await asyncio.sleep(wait_time_exp_backoff(attempt))
+            except (httpx.HTTPError, ChunkFetchError):
+                attempt += 1
+                if attempt >= MAX_CHUNK_RETRIES:
+                    raise
+                await asyncio.sleep(wait_time_exp_backoff(attempt))
+
+    def _chunk_tmp_path(self, chunk_id: int) -> str:
+        """Temp-file path for a staged chunk (RAM-saver mode). Kept alongside
+        the destination so the final in-order write is a same-filesystem move
+        of bytes, and so `_cleanup_temps` can find strays by glob."""
+        return f"{self.dest_path}.mbtmp.{chunk_id}"
+
+    def _cleanup_temps(self) -> None:
+        """Remove any leftover RAM-saver temp files (from a cancel/error that
+        left staged-but-unconsumed chunks). A clean run deletes each as it's
+        consumed, so normally nothing is left to remove here."""
+        for p in glob.glob(f"{self.dest_path}.mbtmp.*"):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
     async def run(self) -> DownloadResult:
         """Run the whole download to completion and return a `DownloadResult`.
 
@@ -247,7 +343,8 @@ class Downloader:
             # `slots`; with it, at most `slots` chunks' worth are ever
             # buffered at once, however far a straggler falls behind.
             claim_sem = asyncio.Semaphore(self.slots)
-            pending: dict[int, bytes] = {}
+            # id -> plaintext bytes (normal mode) or temp-file path (RAM saver).
+            pending: dict[int, bytes | str] = {}
             cond = asyncio.Condition()
             first_error: Exception | None = None
 
@@ -296,8 +393,17 @@ class Downloader:
                     emit_progress()
 
                 try:
-                    ciphertext = await self._fetch_range(download_url, meta.size, chunk, on_bytes=note)
-                    plaintext = crypto.aes_ctr_crypt(ciphertext, aes_key, nonce_bytes, counter_start=chunk.offset // 16)
+                    if self.ram_saver:
+                        # Decrypt straight to a temp file; only the path waits
+                        # in `pending`, so the reorder buffer holds no plaintext.
+                        tmp_path = self._chunk_tmp_path(chunk.chunk_id)
+                        await self._fetch_range_to_file(
+                            download_url, meta.size, chunk, tmp_path, aes_key, nonce_bytes, on_bytes=note
+                        )
+                        deposit: bytes | str = tmp_path
+                    else:
+                        ciphertext = await self._fetch_range(download_url, meta.size, chunk, on_bytes=note)
+                        deposit = crypto.aes_ctr_crypt(ciphertext, aes_key, nonce_bytes, counter_start=chunk.offset // 16)
                 except Exception as exc:  # noqa: BLE001 - surfaced to the writer loop below
                     claim_sem.release()  # this chunk will never reach the writer, free its claim now
                     chunk_inflight.pop(chunk.chunk_id, None)
@@ -307,7 +413,7 @@ class Downloader:
                         cond.notify_all()
                     return
                 async with cond:
-                    pending[chunk.chunk_id] = plaintext
+                    pending[chunk.chunk_id] = deposit
                     cond.notify_all()
                 # claim_sem stays held until the writer processes this chunk below
 
@@ -327,7 +433,14 @@ class Downloader:
                             await cond.wait()
                         if first_error is not None:
                             raise first_error
-                        plaintext = pending.pop(next_id)
+                        item = pending.pop(next_id)
+
+                    if self.ram_saver:
+                        # Read the staged plaintext back from disk (and delete
+                        # the temp file) just before writing it in order.
+                        plaintext = await asyncio.to_thread(_read_and_remove, item)
+                    else:
+                        plaintext = item
 
                     await asyncio.to_thread(f.write, plaintext)
                     mac_gen.process_chunk(plaintext)
@@ -349,6 +462,8 @@ class Downloader:
                         t.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
                 f.close()
+                if self.ram_saver:
+                    self._cleanup_temps()  # sweep any staged-but-unconsumed chunks
 
             mac_ok = mac_gen.meta_mac == expected_meta_mac
             return DownloadResult(path=self.dest_path, size=meta.size, mac_verified=mac_ok)

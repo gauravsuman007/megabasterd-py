@@ -125,6 +125,81 @@ async def test_download_reassembles_out_of_order_chunks_and_verifies_mac(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_ram_saver_produces_identical_output_and_mac(tmp_path):
+    """RAM-saver mode (chunks staged to temp files, streamed-decrypt, re-read in
+    order) must yield byte-identical output and the same verified MAC as the
+    in-RAM path -- even with the first chunk forced to complete last -- and must
+    leave no temp files behind on success."""
+    aes_key_words = [11, 22, 33, 44]
+    nonce_words = (55, 66)
+    size = 3584 * 1024 + 5 * 1024 * 1024  # geometric chunks 1-7 + several 1 MB chunks
+    plaintext, ciphertext, file_key_b64 = _build_synthetic_file(size, aes_key_words, nonce_words)
+
+    meta = FileMetadata(name="synthetic.bin", size=size, file_key=file_key_b64)
+    api = FakeApi(meta, download_url="http://fake.invalid/dl/handle")
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_make_handler(ciphertext, delay_first_chunk=True)))
+
+    dest = tmp_path / "out.bin"
+    progress_events = []
+    downloader = Downloader(
+        api=api, link="link", dest_path=str(dest), slots=8, size_multi=1,
+        client=client, ram_saver=True,
+        progress_cb=lambda done, total: progress_events.append(done),
+    )
+
+    result = await downloader.run()
+
+    assert result.mac_verified is True
+    assert result.size == size
+    assert dest.read_bytes() == plaintext
+    assert progress_events[-1] == size
+    assert progress_events == sorted(progress_events)  # never regressed
+    # No staged temp files left over after a clean run.
+    assert list(tmp_path.glob("*.mbtmp.*")) == []
+
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_ram_saver_cleans_up_temp_files_on_cancellation(tmp_path):
+    """A cancelled RAM-saver download must not leave staged .mbtmp.* files behind."""
+    aes_key_words = [1, 2, 3, 4]
+    nonce_words = (5, 6)
+    size = 20 * 1024 * 1024
+    _plaintext, ciphertext, file_key_b64 = _build_synthetic_file(size, aes_key_words, nonce_words)
+
+    release = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        # Let a few chunks stage to disk, then hang so cancellation interrupts
+        # mid-flight with temp files already on disk.
+        suffix = request.url.path.rsplit("/", 1)[-1]
+        start = int(suffix.split("-")[0]) if "-" in suffix else int(suffix)
+        if start != 0:
+            await release.wait()
+        end_s = suffix.split("-")[1] if "-" in suffix else None
+        end = int(end_s) if end_s else size - 1
+        return httpx.Response(200, content=ciphertext[start : end + 1])
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    meta = FileMetadata(name="synthetic.bin", size=size, file_key=file_key_b64)
+    api = FakeApi(meta, download_url="http://fake.invalid/dl/handle")
+
+    dest = tmp_path / "out.bin"
+    downloader = Downloader(api=api, link="link", dest_path=str(dest), slots=4, size_multi=1, client=client, ram_saver=True)
+
+    task = asyncio.create_task(downloader.run())
+    await asyncio.sleep(0.1)  # let chunk 1 stage its temp file
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert list(tmp_path.glob("*.mbtmp.*")) == []  # swept clean on cancel
+
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_download_resume_keeps_prefix_and_only_fetches_missing_chunks(tmp_path):
     """A partial file left by a crash must be resumed: its whole-chunk prefix
     is kept (and folded back into the MAC), only the missing chunks are

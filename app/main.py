@@ -53,6 +53,7 @@ async def _load_transfer_settings() -> None:
         state.default_download_dir = Path(download_dir)
 
     state.mega_api_key = await state.db.get_setting("mega_api_key") or None
+    state.ram_saver = (await state.db.get_setting("ram_saver")) == "yes"
 
 
 @asynccontextmanager

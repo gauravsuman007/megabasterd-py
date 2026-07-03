@@ -56,6 +56,12 @@ verify_download_mac = True
 # built-in default.
 mega_api_key: str | None = None
 
+# RAM saver (Advanced setting): when True, downloads stage out-of-order chunks
+# to temp files instead of the in-RAM reorder buffer, keeping peak memory flat
+# as slots/concurrent-downloads climb, at the cost of ~2x disk writes. Off by
+# default -- only worthwhile at high concurrency (see Downloader.ram_saver).
+ram_saver = False
+
 # email -> logged-in MegaAPI instance (kept warm so uploads/dir listings
 # don't have to re-login every request)
 active_sessions: dict[str, MegaAPI] = {}

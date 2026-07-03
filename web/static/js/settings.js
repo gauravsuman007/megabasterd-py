@@ -219,12 +219,16 @@ async function loadAdvancedSettings() {
     const resp = await fetch("/api/settings/advanced");
     const data = await resp.json();
     advancedForm.mega_api_key.value = data.mega_api_key;
+    advancedForm.ram_saver.checked = data.ram_saver;
 }
 loadAdvancedSettings();
 
 advancedForm.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const body = new URLSearchParams({ mega_api_key: advancedForm.mega_api_key.value });
+    const body = new URLSearchParams({
+        mega_api_key: advancedForm.mega_api_key.value,
+        ram_saver: advancedForm.ram_saver.checked ? "true" : "false",
+    });
     const resp = await fetch("/api/settings/advanced", { method: "POST", body });
     if (!resp.ok) { alert(await resp.text()); return; }
     alert("Saved.");

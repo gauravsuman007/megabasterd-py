@@ -140,13 +140,17 @@ async def update_upload_settings(max_concurrent: int = Form(4), default_slots: i
 
 @router.get("/advanced")
 async def get_advanced_settings():
-    """The custom MEGA API key, or "" if using the built-in default."""
-    return {"mega_api_key": state.mega_api_key or ""}
+    """The custom MEGA API key (or "" for the built-in default) and the RAM-saver flag."""
+    return {"mega_api_key": state.mega_api_key or "", "ram_saver": state.ram_saver}
 
 
 @router.post("/advanced")
-async def update_advanced_settings(mega_api_key: str = Form("")):
-    """Set or clear (blank) the custom MEGA API key."""
+async def update_advanced_settings(mega_api_key: str = Form(""), ram_saver: bool = Form(False)):
+    """Set/clear the custom MEGA API key and toggle RAM saver. RAM saver applies
+    to downloads started after the change (in-flight transfers keep their mode)."""
     state.mega_api_key = mega_api_key or None
+    state.ram_saver = ram_saver
     await state.db.set_setting("mega_api_key", mega_api_key)
+    await state.db.set_setting("ram_saver", "yes" if ram_saver else "no")
+    return {"ok": True}
     return {"ok": True}

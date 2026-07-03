@@ -125,13 +125,26 @@ def decrypt_key(data: bytes, key: bytes) -> bytes:
     return aes_ecb_decrypt(data, key)
 
 
-def aes_ctr_crypt(data: bytes, key: bytes, iv8: bytes, counter_start: int = 0) -> bytes:
-    """AES-CTR with MEGA's nonce/counter layout: 8-byte nonce + 8-byte big-endian
-    block counter, counter_start given in 16-byte blocks (i.e. byte offset // 16)."""
+def new_ctr_cipher(key: bytes, iv8: bytes, counter_start: int = 0):
+    """A fresh AES-CTR cipher object with MEGA's nonce/counter layout (8-byte
+    nonce + 8-byte big-endian block counter, counter_start in 16-byte blocks).
+
+    Returned so callers can decrypt a chunk *incrementally* -- CTR is a stream
+    cipher, so feeding arbitrary-length blocks in sequence
+    (`c.encrypt(b1); c.encrypt(b2)`) yields the same keystream as one call over
+    the concatenation. Used by the RAM-saver download path to decrypt straight
+    to disk without buffering the whole chunk. For a one-shot whole-buffer
+    decrypt, use `aes_ctr_crypt` instead."""
     from Crypto.Util import Counter
 
     ctr = Counter.new(64, prefix=iv8, initial_value=counter_start)
-    return AES.new(key, AES.MODE_CTR, counter=ctr).encrypt(data)  # symmetric: encrypt==decrypt
+    return AES.new(key, AES.MODE_CTR, counter=ctr)  # symmetric: encrypt==decrypt
+
+
+def aes_ctr_crypt(data: bytes, key: bytes, iv8: bytes, counter_start: int = 0) -> bytes:
+    """AES-CTR with MEGA's nonce/counter layout: 8-byte nonce + 8-byte big-endian
+    block counter, counter_start given in 16-byte blocks (i.e. byte offset // 16)."""
+    return new_ctr_cipher(key, iv8, counter_start).encrypt(data)
 
 
 # ---------------------------------------------------------------------------

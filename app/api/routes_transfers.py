@@ -437,6 +437,7 @@ async def _run_download(transfer_id: str, link: str, resume_path: str | None = N
                 proxy_manager=state.active_proxy_manager(),
                 pause_event=pause_event,
                 resume=resuming,
+                ram_saver=state.ram_saver,
             )
             result = await downloader.run()
         if result.mac_verified or not state.verify_download_mac:

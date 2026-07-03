@@ -205,6 +205,8 @@
                     <label>Custom MEGA API key <span class="hint">(leave blank to use the built-in default)</span>
                         <input type="text" name="mega_api_key" placeholder="">
                     </label>
+                    <label class="checkbox-row"><input type="checkbox" name="ram_saver"> RAM saver</label>
+                    <p class="hint">Saves RAM at a high number of slots and concurrent downloads by staging chunks to disk instead of holding them in memory, at the cost of doubling disk I/O.</p>
                     <button type="submit">Save</button>
                 </form>
             </section>

@@ -109,6 +109,18 @@ async def test_advanced_settings_roundtrip(client):
     assert state.mega_api_key is None
 
 
+@pytest.mark.asyncio
+async def test_advanced_ram_saver_toggle(client):
+    assert state.ram_saver is False  # default off
+
+    await client.post("/api/settings/advanced", data={"mega_api_key": "", "ram_saver": "true"})
+    assert state.ram_saver is True
+    assert (await client.get("/api/settings/advanced")).json()["ram_saver"] is True
+
+    await client.post("/api/settings/advanced", data={"mega_api_key": "", "ram_saver": "false"})
+    assert state.ram_saver is False
+
+
 
 
 @pytest.mark.asyncio
