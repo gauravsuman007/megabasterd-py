@@ -27,7 +27,7 @@ Then open http://127.0.0.1:8009.
 docker compose up -d --build
 ```
 
-Then open http://127.0.0.1:8009. The account database (`/data`) and downloaded files (`/downloads`) live in named Docker volumes (`megabasterd-data`, `megabasterd-downloads`), so they survive container restarts/rebuilds. `ffmpeg` is included in the image, so video thumbnailing works without extra setup.
+Then open http://127.0.0.1:8009. The account database (`/data`) and downloaded files (`/downloads`) live in named Docker volumes (`megabasterd-data`, `megabasterd-downloads`), so they survive container restarts/rebuilds.
 
 ```bash
 docker compose down        # stop (keeps volumes/data)
@@ -39,6 +39,17 @@ To run the container directly instead of via compose:
 ```bash
 docker build -t megabasterd-py .
 docker run -p 8009:8009 -v megabasterd-data:/data -v megabasterd-downloads:/downloads megabasterd-py
+```
+
+### Image variants
+
+The default image is slim (~250 MB) and omits `ffmpeg`, so **video** thumbnails
+are disabled (image thumbnails via Pillow still work, and nothing else is
+affected). To build the variant that includes `ffmpeg` for video thumbnails
+(~670 MB):
+
+```bash
+docker build --build-arg INCLUDE_FFMPEG=1 -t megabasterd-py:thumbnails .
 ```
 
 ## Testing

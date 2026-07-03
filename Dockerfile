@@ -1,11 +1,16 @@
 FROM python:3.12-slim
 
-# ffmpeg is optional at runtime (app/features/thumbnailer.py degrades
-# gracefully without it) but bundled here so video thumbnailing works
-# out of the box.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+# ffmpeg is only used for *video* thumbnails; app/features/thumbnailer.py
+# degrades gracefully without it (image thumbnails via Pillow still work).
+# It weighs ~420 MB, so the default image omits it (~250 MB total). To build
+# the video-thumbnail variant instead (~670 MB):
+#   docker build --build-arg INCLUDE_FFMPEG=1 -t megabasterd-py:thumbnails .
+ARG INCLUDE_FFMPEG=0
+RUN if [ "$INCLUDE_FFMPEG" = "1" ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends ffmpeg \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 WORKDIR /app
 
