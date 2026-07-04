@@ -1,0 +1,125 @@
+name: Publish Docker images
+
+# Builds the multi-architecture images (linux/amd64, linux/arm64, linux/arm/v7)
+# and pushes them to Docker Hub. The Dockerfile itself carries the arm/v7 fix
+# (it installs a C toolchain to compile the wheel-less deps, then purges it in
+# the same layer so the runtime image stays slim).
+#
+# Triggers:
+#   * push to the default branch that changes APP_VERSION in app/main.py
+#     (i.e. a version bump) -> build + push.
+#   * manual run (Actions tab / `gh workflow run`) with `dry_run: true` ->
+#     build every architecture but push NOTHING, to verify the build works.
+#
+# Tags produced: <version> and latest (slim, no ffmpeg -- latest ALWAYS tracks
+# the slim build), and <version>-thumbnails (adds ffmpeg for video thumbnails).
+#
+# A real (pushing) run needs one repository secret: DOCKERHUB_TOKEN — a Docker
+# Hub access token for the gauravsuman007 account. The dry run needs no secrets.
+
+on:
+  push:
+    branches: [main, master]
+    paths: ['app/main.py']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build all architectures but do NOT push (verification only)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: docker-publish
+  cancel-in-progress: false
+
+env:
+  IMAGE: gauravsuman007/megabasterd-py
+  PLATFORMS: linux/amd64,linux/arm64,linux/arm/v7
+
+jobs:
+  # Work out the version and whether a build is warranted. The push path filter
+  # fires on any edit to app/main.py, so here we confirm APP_VERSION actually
+  # changed versus the previous commit; a manual run always builds.
+  decide:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # need the previous commit to compare APP_VERSION
+      - id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          read_version() { grep -E '^APP_VERSION' "$1" | sed -E 's/.*"([^"]+)".*/\1/'; }
+          VERSION="$(read_version app/main.py)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "Manual run: building version $VERSION."
+          else
+            PREV="$(git show HEAD^:app/main.py 2>/dev/null | grep -E '^APP_VERSION' | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+            if [ "$VERSION" != "$PREV" ]; then
+              echo "build=true" >> "$GITHUB_OUTPUT"
+              echo "Version bumped: ${PREV:-<none>} -> $VERSION. Building."
+            else
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              echo "APP_VERSION unchanged ($VERSION); nothing to publish."
+            fi
+          fi
+
+  publish:
+    needs: decide
+    if: needs.decide.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.decide.outputs.version }}
+      # 'true' only for a manually-dispatched dry run; 'false' for real pushes.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3      # amd64 + arm/v7 emulation
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: env.DRY_RUN != 'true'
+        uses: docker/login-action@v3
+        with:
+          username: gauravsuman007
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Slim (no ffmpeg) -> :<version> and :latest. latest ALWAYS tracks slim.
+      - name: Build slim (latest + version)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ env.PLATFORMS }}
+          push: ${{ env.DRY_RUN != 'true' }}
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.IMAGE }}:latest
+
+      # ffmpeg build -> :<version>-thumbnails.
+      - name: Build thumbnails (ffmpeg)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ env.PLATFORMS }}
+          build-args: INCLUDE_FFMPEG=1
+          push: ${{ env.DRY_RUN != 'true' }}
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE }}:${{ env.VERSION }}-thumbnails
+
+      - name: Summary
+        shell: bash
+        run: |
+          if [ "${{ env.DRY_RUN }}" = "true" ]; then
+            echo "🧪 Dry run — built ${PLATFORMS} for :${VERSION}, :latest, :${VERSION}-thumbnails. Nothing pushed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "🚀 Pushed ${IMAGE}: :${VERSION}, :latest (slim), :${VERSION}-thumbnails — ${PLATFORMS}." >> "$GITHUB_STEP_SUMMARY"
+          fi
