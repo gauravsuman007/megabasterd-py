@@ -1,6 +1,10 @@
+# Public edition: deploy by pulling the prebuilt multi-arch image from Docker
+# Hub (latest = slim, no ffmpeg). Swap the tag for `:8.57-thumbnails` if you
+# want video thumbnails. To build locally instead, replace `image:` with
+# `build: .`.
 services:
   megabasterd:
-    build: .
+    image: gauravsuman007/megabasterd-py:latest
     ports:
       - "8009:8009"
     volumes:

@@ -23,33 +23,47 @@ Then open http://127.0.0.1:8009.
 
 ## Running with Docker
 
+Prebuilt multi-architecture images (linux/amd64, linux/arm64, linux/arm/v7) are
+published to Docker Hub at [`gauravsuman007/megabasterd-py`](https://hub.docker.com/r/gauravsuman007/megabasterd-py).
+No build step needed — just pull and run:
+
 ```bash
-docker compose up -d --build
+docker run -d --name megabasterd -p 8009:8009 \
+  -v megabasterd-data:/data \
+  -v megabasterd-downloads:/downloads \
+  gauravsuman007/megabasterd-py:latest
 ```
 
-Then open http://127.0.0.1:8009. The account database (`/data`) and downloaded files (`/downloads`) live in named Docker volumes (`megabasterd-data`, `megabasterd-downloads`), so they survive container restarts/rebuilds.
+Then open http://127.0.0.1:8009. The account database (`/data`) and downloaded
+files (`/downloads`) live in named Docker volumes, so they survive container
+restarts and upgrades.
+
+Or with Docker Compose (`docker-compose.yml` in this repo already points at the
+published image):
 
 ```bash
+docker compose up -d       # pull + start
 docker compose down        # stop (keeps volumes/data)
 docker compose down -v     # stop and wipe accounts/downloads too
 ```
 
-To run the container directly instead of via compose:
+### Image tags
+
+| Tag | Contents |
+|---|---|
+| `latest`, `8.57` | Slim image (~250 MB), **no `ffmpeg`**. Image thumbnails (Pillow) work; video thumbnails are disabled. `latest` always tracks this slim build. |
+| `8.57-thumbnails` | Adds `ffmpeg` for video thumbnails (~670 MB). Otherwise identical. |
+
+To upgrade, pull the new tag and recreate the container — your volumes (accounts,
+downloads) are preserved.
+
+### Building from source (optional)
+
+If you'd rather build locally instead of pulling:
 
 ```bash
-docker build -t megabasterd-py .
-docker run -p 8009:8009 -v megabasterd-data:/data -v megabasterd-downloads:/downloads megabasterd-py
-```
-
-### Image variants
-
-The default image is slim (~250 MB) and omits `ffmpeg`, so **video** thumbnails
-are disabled (image thumbnails via Pillow still work, and nothing else is
-affected). To build the variant that includes `ffmpeg` for video thumbnails
-(~670 MB):
-
-```bash
-docker build --build-arg INCLUDE_FFMPEG=1 -t megabasterd-py:thumbnails .
+docker build -t megabasterd-py .                                  # slim (no ffmpeg)
+docker build --build-arg INCLUDE_FFMPEG=1 -t megabasterd-py:thumbnails .   # with ffmpeg
 ```
 
 ## Testing
