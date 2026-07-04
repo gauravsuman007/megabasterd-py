@@ -1,0 +1,199 @@
+name: Build desktop apps
+
+# Builds the native desktop application (pywebview + PyInstaller) for macOS,
+# Windows and Linux across the architectures GitHub's hosted runners can build
+# natively, and publishes the artifacts to a GitHub Release.
+#
+# PyInstaller cannot cross-compile, so each OS/arch is built on a matching
+# runner. Coverage:
+#     macOS   x64  (macos-13, Intel)        arm64 (macos-14, Apple Silicon)
+#     Windows x64  (windows-latest)         x86 (32-bit Python)   arm64 (windows-11-arm)
+#     Linux   x64  (ubuntu-latest)          arm64 (ubuntu-24.04-arm)
+# macOS ships no 32-bit builds (the OS is 64-bit only), and 32-bit Linux is
+# omitted -- WebKitGTK on i386 is effectively unmaintained and there is no
+# hosted 32-bit Linux runner.
+#
+# These are the *slim* builds: no bundled ffmpeg (keeps the download small).
+# Video thumbnails light up automatically if the user has ffmpeg/ffprobe on
+# their system -- desktop.py widens PATH so a Homebrew/apt/manual install is
+# found even when launched from Finder/Explorer.
+#
+# Triggers (mirrors the Docker publish workflow):
+#   * push to the default branch that changes APP_VERSION in app/main.py
+#     (a version bump) -> build + release.
+#   * manual run with dry_run: true -> build every platform but publish nothing.
+#
+# No secrets required: the release is created with the built-in GITHUB_TOKEN.
+
+on:
+  push:
+    branches: [main, master]
+    paths: ['app/main.py']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build every platform but do NOT create a GitHub Release'
+        type: boolean
+        default: false
+
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+jobs:
+  # Resolve the version and whether a build is warranted (a manual run always
+  # builds; a push builds only when APP_VERSION actually changed).
+  decide:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2   # need the previous commit to compare APP_VERSION
+      - id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          read_version() { grep -E '^APP_VERSION' "$1" | sed -E 's/.*"([^"]+)".*/\1/'; }
+          VERSION="$(read_version app/main.py)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "Manual run: building version $VERSION."
+          else
+            PREV="$(git show HEAD^:app/main.py 2>/dev/null | grep -E '^APP_VERSION' | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+            if [ "$VERSION" != "$PREV" ]; then
+              echo "build=true" >> "$GITHUB_OUTPUT"
+              echo "Version bumped: ${PREV:-<none>} -> $VERSION. Building."
+            else
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              echo "APP_VERSION unchanged ($VERSION); nothing to build."
+            fi
+          fi
+
+  build:
+    needs: decide
+    if: needs.decide.outputs.build == 'true'
+    strategy:
+      fail-fast: false   # one flaky platform must not sink the others
+      matrix:
+        include:
+          - { os: macos-13,        target: macos-x64,     pyarch: x64 }
+          - { os: macos-14,        target: macos-arm64,   pyarch: arm64 }
+          - { os: windows-latest,  target: windows-x64,   pyarch: x64 }
+          - { os: windows-latest,  target: windows-x86,   pyarch: x86 }
+          - { os: windows-11-arm,  target: windows-arm64, pyarch: arm64 }
+          - { os: ubuntu-latest,   target: linux-x64,     pyarch: x64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64,  pyarch: arm64 }
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.decide.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: ${{ matrix.pyarch }}
+
+      # pywebview's GTK backend needs WebKitGTK + GObject-introspection at build
+      # and run time; PyGObject/pycairo compile against the -dev headers.
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-0 libcairo2 gir1.2-gtk-3.0 \
+            libwebkit2gtk-4.1-0 gir1.2-webkit2-4.1 \
+            libgirepository-1.0-1 libgirepository1.0-dev \
+            libcairo2-dev pkg-config
+
+      - name: Install app + build tooling
+        shell: bash
+        run: |
+          set -eux
+          python -m pip install --upgrade pip
+          pip install .
+          pip install pyinstaller pywebview
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            # Pin to the last PyGObject line built against girepository-1.0.
+            pip install "PyGObject==3.48.2" pycairo
+          fi
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: pyinstaller --noconfirm --clean desktop.spec
+
+      - name: Package (macOS .app)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -eux
+          ditto -c -k --keepParent "dist/MegaBasterd.app" \
+            "MegaBasterd-${VERSION}-${{ matrix.target }}.zip"
+
+      - name: Package (Windows .exe)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -eux
+          7z a "MegaBasterd-${VERSION}-${{ matrix.target }}.zip" "./dist/MegaBasterd.exe"
+
+      - name: Package (Linux binary)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -eux
+          zip -j "MegaBasterd-${VERSION}-${{ matrix.target }}.zip" "dist/MegaBasterd"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MegaBasterd-${{ matrix.target }}
+          path: MegaBasterd-*.zip
+          if-no-files-found: error
+
+  # Gather every successfully-built artifact into one GitHub Release. Runs even
+  # if some build legs failed (always()), so a single bad platform doesn't block
+  # publishing the rest. Skipped entirely on a dry run.
+  release:
+    needs: [decide, build]
+    if: |
+      always() &&
+      needs.decide.outputs.build == 'true' &&
+      !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.decide.outputs.version }}
+          name: MegaBasterd v${{ needs.decide.outputs.version }}
+          fail_on_unmatched_files: false
+          files: artifacts/**/*.zip
+          body: |
+            Native desktop builds of MegaBasterd-Py **v${{ needs.decide.outputs.version }}**
+            (pywebview + PyInstaller, slim / no bundled ffmpeg).
+
+            Download the archive for your platform, unzip, and run:
+
+            | Platform | Asset |
+            |---|---|
+            | macOS (Apple Silicon) | `macos-arm64` |
+            | macOS (Intel) | `macos-x64` |
+            | Windows 64-bit | `windows-x64` |
+            | Windows 32-bit | `windows-x86` |
+            | Windows on ARM | `windows-arm64` |
+            | Linux 64-bit | `linux-x64` |
+            | Linux ARM64 | `linux-arm64` |
+
+            Video thumbnails require `ffmpeg` installed on your system; image
+            thumbnails work out of the box. Linux additionally needs WebKitGTK
+            (`libwebkit2gtk-4.1-0`) present at runtime.

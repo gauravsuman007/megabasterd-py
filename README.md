@@ -21,6 +21,39 @@ python3 -m venv .venv
 
 Then open http://127.0.0.1:8009.
 
+## Native desktop app (no Python needed)
+
+Prefer a real desktop app over a browser tab? Prebuilt native builds are
+published on the [Releases page](https://github.com/gauravsuman007/megabasterd-py/releases).
+They wrap the same app in the operating system's native webview (pywebview —
+WebKit on macOS, WebView2 on Windows, WebKitGTK on Linux), so there's **no
+Python install and no bundled browser**. Download the archive for your platform,
+unzip, and launch it:
+
+| Platform | Asset suffix |
+|---|---|
+| macOS (Apple Silicon) | `macos-arm64` |
+| macOS (Intel) | `macos-x64` |
+| Windows 64-bit | `windows-x64` |
+| Windows 32-bit | `windows-x86` |
+| Windows on ARM | `windows-arm64` |
+| Linux 64-bit | `linux-x64` |
+| Linux ARM64 | `linux-arm64` |
+
+Your accounts database and default download folder live in the standard per-user
+location (e.g. `~/Library/Application Support/MegaBasterd` on macOS,
+`%APPDATA%\MegaBasterd` on Windows), so they survive app upgrades.
+
+Notes:
+- These are **slim** builds with no bundled `ffmpeg`. **Video** thumbnails turn
+  on automatically if `ffmpeg`/`ffprobe` are installed on your system (Homebrew,
+  your package manager, or a manual install are all detected). Image thumbnails
+  work without it.
+- **Linux** additionally needs WebKitGTK present at runtime —
+  `sudo apt install libwebkit2gtk-4.1-0` (or your distro's equivalent).
+- macOS/Windows builds are unsigned, so on first launch you may need to approve
+  them (macOS: right-click → Open; Windows: "More info" → "Run anyway").
+
 ## Running with Docker
 
 Prebuilt multi-architecture images (linux/amd64, linux/386, linux/arm64, linux/arm/v7) are
