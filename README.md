@@ -23,7 +23,7 @@ Then open http://127.0.0.1:8009.
 
 ## Running with Docker
 
-Prebuilt multi-architecture images (linux/amd64, linux/arm64, linux/arm/v7) are
+Prebuilt multi-architecture images (linux/amd64, linux/386, linux/arm64, linux/arm/v7) are
 published to Docker Hub at [`gauravsuman007/megabasterd-py`](https://hub.docker.com/r/gauravsuman007/megabasterd-py).
 No build step needed — just pull and run:
 

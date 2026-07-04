@@ -16,10 +16,12 @@ COPY web ./web
 # Install the Python dependencies.
 #
 # On linux/amd64 and linux/arm64 these all resolve to prebuilt manylinux wheels,
-# so no compiler is involved. On linux/arm/v7 (32-bit ARM) several of them
-# (pillow, pycryptodome, httptools, uvloop) publish no wheel and must be built
-# from source, which needs a C toolchain plus the JPEG/zlib headers Pillow links
-# against. We install that toolchain, build, and then purge it in the SAME layer,
+# so no compiler is involved. On the 32-bit targets (linux/arm/v7, and linux/386
+# for some packages) several of them (pillow, pycryptodome, httptools, uvloop)
+# publish no wheel and must be built from source, which needs a C toolchain plus
+# the JPEG/zlib headers Pillow links against. We install that toolchain
+# unconditionally (harmless where wheels already exist), build, and then purge it
+# in the SAME layer,
 # so the runtime image never ships a compiler -- only the small runtime shared
 # libraries Pillow loads at run time (libjpeg, zlib), plus ffmpeg when requested,
 # remain. The default image therefore stays slim on every architecture.

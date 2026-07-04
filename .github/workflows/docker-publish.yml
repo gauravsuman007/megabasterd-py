@@ -1,7 +1,7 @@
 name: Publish Docker images
 
-# Builds the multi-architecture images (linux/amd64, linux/arm64, linux/arm/v7)
-# and pushes them to Docker Hub. The Dockerfile itself carries the arm/v7 fix
+# Builds the multi-architecture images (linux/amd64, linux/386, linux/arm64,
+# linux/arm/v7) and pushes them to Docker Hub. The Dockerfile itself carries the arm/v7 fix
 # (it installs a C toolchain to compile the wheel-less deps, then purges it in
 # the same layer so the runtime image stays slim).
 #
@@ -34,7 +34,7 @@ concurrency:
 
 env:
   IMAGE: gauravsuman007/megabasterd-py
-  PLATFORMS: linux/amd64,linux/arm64,linux/arm/v7
+  PLATFORMS: linux/amd64,linux/386,linux/arm64,linux/arm/v7
 
 jobs:
   # Work out the version and whether a build is warranted. The push path filter
