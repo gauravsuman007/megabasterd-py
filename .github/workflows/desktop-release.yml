@@ -47,7 +47,9 @@ on:
 
 concurrency:
   group: desktop-release
-  cancel-in-progress: false
+  # A newer run supersedes an older one instead of queueing behind it -- so a
+  # run stuck on a scarce runner can never block a fresh dispatch or version bump.
+  cancel-in-progress: true
 
 jobs:
   # Resolve the version and whether a build is warranted (a manual run always
