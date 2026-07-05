@@ -276,20 +276,65 @@ jobs:
           lipo -archs "$PYBIN" | tee /dev/stderr | grep -q "x86_64"
           lipo -archs "$PYBIN" | grep -q "arm64"
 
-      - name: Install universal2 dependencies
+      - name: Install universal2 dependencies (fuse single-arch wheels)
         shell: bash
+        env:
+          # Every runtime dependency of the desktop build. wsproto (pure Python)
+          # stands in for websockets/uvloop/httptools, which ship no universal2
+          # wheel and whose fused C extensions we don't want to chase.
+          REQS: fastapi uvicorn httpx[socks] pycryptodome aiosqlite jinja2 pillow python-multipart pywebview wsproto pyinstaller
         run: |
           set -euxo pipefail
-          "$PYBIN" -m pip install --upgrade pip
-          # Force universal2 wheels for every dependency into a private tree.
-          # --platform requires --only-binary, so any dep lacking a universal2
-          # wheel fails loudly here rather than producing a thin app.
-          "$PYBIN" -m pip install \
-            --only-binary=:all: \
-            --platform macosx_12_0_universal2 \
-            --target "$GITHUB_WORKSPACE/uni_site" \
-            fastapi "uvicorn" "httpx[socks]" pycryptodome aiosqlite jinja2 \
-            pillow python-multipart pywebview wsproto pyinstaller
+          export PATH="/Library/Frameworks/Python.framework/Versions/3.12/bin:$PATH"
+          "$PYBIN" -m pip install --upgrade pip "delocate>=0.11"
+
+          # Many popular packages (pillow, pydantic-core, ...) stopped shipping
+          # universal2 wheels and now publish separate arm64 + x86_64 wheels. We
+          # can't force-download a universal2 wheel that doesn't exist, so instead
+          # we fetch BOTH single-arch wheel sets and fuse each pair into a
+          # universal2 wheel with delocate. Wheels that are already universal2 or
+          # pure-Python are used as-is.
+          "$PYBIN" -m pip download --only-binary=:all: --implementation cp \
+            --platform macosx_11_0_arm64 --python-version 3.12 \
+            --dest wheels_arm $REQS
+          # Pin the exact versions the arm64 resolve chose, so the x86_64 resolve
+          # matches package-for-package (delocate-merge needs identical versions).
+          "$PYBIN" - <<'PY'
+          import pathlib
+          cons = set()
+          for whl in pathlib.Path("wheels_arm").glob("*.whl"):
+              name, ver = whl.name.split("-")[:2]
+              cons.add(f"{name}=={ver}")
+          pathlib.Path("constraints.txt").write_text("\n".join(sorted(cons)) + "\n")
+          print(pathlib.Path("constraints.txt").read_text())
+          PY
+          "$PYBIN" -m pip download --only-binary=:all: --implementation cp \
+            --platform macosx_10_13_x86_64 --python-version 3.12 \
+            -c constraints.txt --dest wheels_x86 $REQS
+
+          # Fuse arch-specific pairs; copy already-fat / pure-Python wheels.
+          mkdir -p fused
+          "$PYBIN" - <<'PY'
+          import pathlib, shutil, subprocess, sys
+          arm, x86, out = map(pathlib.Path, ("wheels_arm", "wheels_x86", "fused"))
+          def key(p):  # (package, version)
+              parts = p.name.split("-"); return (parts[0].lower(), parts[1])
+          x86_by = {key(p): p for p in x86.glob("*.whl")}
+          for w in sorted(arm.glob("*.whl")):
+              n = w.name
+              if "universal2" in n or n.endswith("-none-any.whl") or "macosx" not in n:
+                  shutil.copy(w, out / n)          # already fat, or pure-Python
+                  continue
+              other = x86_by.get(key(w))
+              if not other:
+                  sys.exit(f"no x86_64 wheel matching {n}")
+              subprocess.run(["delocate-merge", str(w), str(other), "-w", str(out)], check=True)
+          print("fused wheels:", sorted(p.name for p in out.glob("*.whl")))
+          PY
+
+          # Install the fused universal2 (+ pure-Python) wheels offline.
+          "$PYBIN" -m pip install --no-index --find-links fused \
+            --target "$GITHUB_WORKSPACE/uni_site" $REQS
 
       - name: Build universal2 app with PyInstaller
         shell: bash
