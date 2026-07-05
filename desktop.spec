@@ -24,9 +24,18 @@ Why the explicit collection below:
                           (uvloop/httptools where built, asyncio/h11 elsewhere)
                           so there is no server-side performance regression.
 """
+import os
+
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
 app_name = "MegaBasterd"
+
+# Architecture to freeze for. Left unset (None) on the native per-arch builds so
+# PyInstaller targets the runner's own arch; the macOS universal build sets
+# PYINSTALLER_TARGET_ARCH=universal2 so a single .app runs on both Intel and
+# Apple Silicon. Requires every bundled binary to contain both slices, which the
+# universal build guarantees by installing universal2 wheels.
+target_arch = os.environ.get("PYINSTALLER_TARGET_ARCH") or None
 
 datas = [("web", "web")]
 binaries = []
@@ -105,7 +114,7 @@ exe = EXE(
     console=False,          # GUI app: no console window
     disable_windowed_traceback=False,
     argv_emulation=True,    # macOS: forward file-open events / proper argv
-    target_arch=None,       # native arch of the building runner
+    target_arch=target_arch,  # None = runner's arch; "universal2" for the fat build
     codesign_identity=None,
     entitlements_file=None,
 )

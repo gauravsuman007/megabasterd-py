@@ -32,13 +32,17 @@ unzip, and launch it:
 
 | Platform | Asset suffix |
 |---|---|
-| macOS (Apple Silicon) | `macos-arm64` |
-| macOS (Intel) | `macos-x64` |
+| macOS (Apple Silicon, native) | `macos-arm64` |
+| macOS (Intel **or** Apple Silicon) | `macos-universal` |
 | Windows 64-bit | `windows-x64` |
 | Windows 32-bit | `windows-x86` |
 | Windows on ARM | `windows-arm64` |
 | Linux 64-bit | `linux-x64` |
 | Linux ARM64 | `linux-arm64` |
+
+On a Mac, either macOS asset works on Apple Silicon; the `macos-universal` build
+is the one to use on an **Intel** Mac. `macos-arm64` is a smaller, Apple-Silicon-only
+native build.
 
 Your accounts database and default download folder live in the standard per-user
 location (e.g. `~/Library/Application Support/MegaBasterd` on macOS,

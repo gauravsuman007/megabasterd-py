@@ -12,12 +12,15 @@ name: Build desktop apps
 #
 # PyInstaller cannot cross-compile, so each OS/arch is built on a matching
 # runner. Coverage:
-#     macOS   x64  (macos-13, Intel)        arm64 (macos-14, Apple Silicon)
-#     Windows x64  (windows-latest)         x86 (32-bit Python)   arm64 (windows-11-arm)
-#     Linux   x64  (ubuntu-latest)          arm64 (ubuntu-24.04-arm)
-# macOS ships no 32-bit builds (the OS is 64-bit only), and 32-bit Linux is
-# omitted -- WebKitGTK on i386 is effectively unmaintained and there is no
-# hosted 32-bit Linux runner.
+#     macOS   arm64 (macos-14, native Apple Silicon)
+#             universal2 (macos-14, one .app for Intel + Apple Silicon)
+#     Windows x64  (windows-latest)   x86 (32-bit Python)   arm64 (windows-11-arm)
+#     Linux   x64  (ubuntu-latest)    arm64 (ubuntu-24.04-arm)
+# The Intel Mac is served by the universal2 build (which also runs on Apple
+# Silicon) rather than a dedicated macos-13 leg -- GitHub's free Intel runners
+# are so scarce they routinely never get scheduled. macOS ships no 32-bit
+# builds (the OS is 64-bit only), and 32-bit Linux is omitted -- WebKitGTK on
+# i386 is effectively unmaintained and there is no hosted 32-bit Linux runner.
 #
 # These are the *slim* builds: no bundled ffmpeg (keeps the download small).
 # Video thumbnails light up automatically if the user has ffmpeg/ffprobe on
@@ -113,8 +116,8 @@ jobs:
             echo
             echo '| Platform | Asset |'
             echo '|---|---|'
-            echo '| macOS (Apple Silicon) | `macos-arm64` |'
-            echo '| macOS (Intel) | `macos-x64` |'
+            echo '| macOS (Apple Silicon, native) | `macos-arm64` |'
+            echo '| macOS (Intel + Apple Silicon) | `macos-universal` |'
             echo '| Windows 64-bit | `windows-x64` |'
             echo '| Windows 32-bit | `windows-x86` |'
             echo '| Windows on ARM | `windows-arm64` |'
@@ -137,7 +140,6 @@ jobs:
       fail-fast: false   # one flaky platform must not sink the others
       matrix:
         include:
-          - { os: macos-13,        target: macos-x64,     pyarch: x64 }
           - { os: macos-14,        target: macos-arm64,   pyarch: arm64 }
           - { os: windows-latest,  target: windows-x64,   pyarch: x64 }
           - { os: windows-latest,  target: windows-x86,   pyarch: x86 }
@@ -222,6 +224,99 @@ jobs:
       # every leg does this independently (and the release already exists), a
       # slow or starved platform never blocks the others -- its asset simply
       # arrives whenever that leg finishes. --clobber makes re-runs idempotent.
+      - name: Upload asset to release
+        if: env.IS_DRY_RUN != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "v$VERSION" MegaBasterd-*.zip \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+  # macOS universal2 build: a single .app that runs natively on both Intel and
+  # Apple Silicon Macs. This replaces the dedicated Intel (macos-13) leg, whose
+  # runners are so scarce they routinely never get scheduled. It runs on the
+  # plentiful Apple-Silicon runner instead.
+  #
+  # The trick to a working universal2 freeze is that EVERY bundled binary must
+  # contain both the x86_64 and arm64 slices. `actions/setup-python` only ships
+  # single-arch interpreters, and a plain `pip install` on an arm64 interpreter
+  # pulls arm64-only wheels -- so we (1) install the official python.org
+  # universal2 interpreter and (2) force universal2 wheels for every dependency
+  # via `pip --platform ... --only-binary`. Using `wsproto` (pure Python) for
+  # websockets avoids the one common dep (`websockets`' C speedups / `uvloop` /
+  # `httptools`) that ships no universal2 wheel.
+  build_macos_universal:
+    needs: [decide, create_release]
+    if: always() && needs.decide.outputs.build == 'true'
+    runs-on: macos-14
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.decide.outputs.version }}
+      IS_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+      # Universal2 CPython from python.org (macos11.pkg is the universal2 build).
+      PY_VERSION: '3.12.8'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install universal2 CPython from python.org
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -fLo /tmp/python.pkg \
+            "https://www.python.org/ftp/python/${PY_VERSION}/python-${PY_VERSION}-macos11.pkg"
+          sudo installer -pkg /tmp/python.pkg -target /
+          PYBIN="/Library/Frameworks/Python.framework/Versions/3.12/bin/python3"
+          echo "PYBIN=$PYBIN" >> "$GITHUB_ENV"
+          # Confirm the interpreter itself is universal2 (both slices present).
+          lipo -archs "$PYBIN" | tee /dev/stderr | grep -q "x86_64"
+          lipo -archs "$PYBIN" | grep -q "arm64"
+
+      - name: Install universal2 dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          "$PYBIN" -m pip install --upgrade pip
+          # Force universal2 wheels for every dependency into a private tree.
+          # --platform requires --only-binary, so any dep lacking a universal2
+          # wheel fails loudly here rather than producing a thin app.
+          "$PYBIN" -m pip install \
+            --only-binary=:all: \
+            --platform macosx_12_0_universal2 \
+            --target "$GITHUB_WORKSPACE/uni_site" \
+            fastapi "uvicorn" "httpx[socks]" pycryptodome aiosqlite jinja2 \
+            pillow python-multipart pywebview wsproto pyinstaller
+
+      - name: Build universal2 app with PyInstaller
+        shell: bash
+        env:
+          PYINSTALLER_TARGET_ARCH: universal2
+          PYTHONPATH: ${{ github.workspace }}/uni_site
+        run: |
+          set -euxo pipefail
+          # app/ and web/ come from the checkout; deps come from uni_site.
+          "$PYBIN" -m PyInstaller --noconfirm --clean desktop.spec
+          # Fail unless the frozen binary really is a fat (both-arch) Mach-O.
+          BIN="dist/MegaBasterd.app/Contents/MacOS/MegaBasterd"
+          lipo -archs "$BIN"
+          lipo -archs "$BIN" | grep -q "x86_64"
+          lipo -archs "$BIN" | grep -q "arm64"
+
+      - name: Package (macOS universal .app)
+        shell: bash
+        run: |
+          set -eux
+          ditto -c -k --keepParent "dist/MegaBasterd.app" \
+            "MegaBasterd-${VERSION}-macos-universal.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MegaBasterd-macos-universal
+          path: MegaBasterd-*.zip
+          if-no-files-found: error
+
       - name: Upload asset to release
         if: env.IS_DRY_RUN != 'true'
         shell: bash
