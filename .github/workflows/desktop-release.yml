@@ -2,7 +2,13 @@ name: Build desktop apps
 
 # Builds the native desktop application (pywebview + PyInstaller) for macOS,
 # Windows and Linux across the architectures GitHub's hosted runners can build
-# natively, and publishes the artifacts to a GitHub Release.
+# natively, and publishes each build straight into a GitHub Release.
+#
+# Publishing model: a `create_release` job makes the release once, up front,
+# then every build leg uploads its OWN asset into it (gh release upload). There
+# is deliberately no aggregate job that waits for the whole matrix -- so a slow
+# or starved platform (notably the scarce macOS-Intel runner) can never hold the
+# release hostage; each asset simply appears when its leg finishes.
 #
 # PyInstaller cannot cross-compile, so each OS/arch is built on a matching
 # runner. Coverage:
@@ -73,9 +79,60 @@ jobs:
             fi
           fi
 
-  build:
+  # Create the GitHub Release ONCE, up front, so the build legs can each upload
+  # their own asset into it independently. This is the key to not letting one
+  # slow/starved platform (notably the scarce macOS-Intel runner) hold the
+  # release hostage: there is no aggregate job that waits for the whole matrix.
+  # Skipped on a dry run. Idempotent -- re-running for an existing version just
+  # reuses the release.
+  create_release:
     needs: decide
-    if: needs.decide.outputs.build == 'true'
+    if: |
+      needs.decide.outputs.build == 'true' &&
+      !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.decide.outputs.version }}
+    steps:
+      - name: Ensure release v${{ needs.decide.outputs.version }} exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists; reusing it."
+            exit 0
+          fi
+          # Build the notes with single-quoted echoes so backticks/pipes stay literal.
+          {
+            echo 'Native desktop builds of MegaBasterd-Py (pywebview + PyInstaller, slim / no bundled ffmpeg).'
+            echo
+            echo 'Download the archive for your platform, unzip, and run. Assets appear as each platform finishes building.'
+            echo
+            echo '| Platform | Asset |'
+            echo '|---|---|'
+            echo '| macOS (Apple Silicon) | `macos-arm64` |'
+            echo '| macOS (Intel) | `macos-x64` |'
+            echo '| Windows 64-bit | `windows-x64` |'
+            echo '| Windows 32-bit | `windows-x86` |'
+            echo '| Windows on ARM | `windows-arm64` |'
+            echo '| Linux 64-bit | `linux-x64` |'
+            echo '| Linux ARM64 | `linux-arm64` |'
+            echo
+            echo 'Video thumbnails require `ffmpeg` installed on your system; image thumbnails work out of the box. Linux additionally needs WebKitGTK (`libwebkit2gtk-4.1-0`) present at runtime. macOS/Windows builds are unsigned — approve on first launch (macOS: right-click, Open; Windows: More info, Run anyway).'
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "v$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "MegaBasterd v$VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+
+  build:
+    # always() so the matrix still runs on a dry run (when create_release is
+    # skipped); the guard keeps it off when there's nothing to build.
+    needs: [decide, create_release]
+    if: always() && needs.decide.outputs.build == 'true'
     strategy:
       fail-fast: false   # one flaky platform must not sink the others
       matrix:
@@ -88,8 +145,13 @@ jobs:
           - { os: ubuntu-latest,   target: linux-x64,     pyarch: x64 }
           - { os: ubuntu-24.04-arm, target: linux-arm64,  pyarch: arm64 }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    permissions:
+      contents: write   # each leg uploads its own asset to the release
     env:
+      GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.decide.outputs.version }}
+      IS_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
     steps:
       - uses: actions/checkout@v5
 
@@ -148,52 +210,22 @@ jobs:
           set -eux
           zip -j "MegaBasterd-${VERSION}-${{ matrix.target }}.zip" "dist/MegaBasterd"
 
+      # Keep the artifact on the run too (handy for a dry run, which publishes
+      # nothing, and as a fallback if a later upload needs re-doing).
       - uses: actions/upload-artifact@v4
         with:
           name: MegaBasterd-${{ matrix.target }}
           path: MegaBasterd-*.zip
           if-no-files-found: error
 
-  # Gather every successfully-built artifact into one GitHub Release. Runs even
-  # if some build legs failed (always()), so a single bad platform doesn't block
-  # publishing the rest. Skipped entirely on a dry run.
-  release:
-    needs: [decide, build]
-    if: |
-      always() &&
-      needs.decide.outputs.build == 'true' &&
-      !(github.event_name == 'workflow_dispatch' && inputs.dry_run)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ needs.decide.outputs.version }}
-          name: MegaBasterd v${{ needs.decide.outputs.version }}
-          fail_on_unmatched_files: false
-          files: artifacts/**/*.zip
-          body: |
-            Native desktop builds of MegaBasterd-Py **v${{ needs.decide.outputs.version }}**
-            (pywebview + PyInstaller, slim / no bundled ffmpeg).
-
-            Download the archive for your platform, unzip, and run:
-
-            | Platform | Asset |
-            |---|---|
-            | macOS (Apple Silicon) | `macos-arm64` |
-            | macOS (Intel) | `macos-x64` |
-            | Windows 64-bit | `windows-x64` |
-            | Windows 32-bit | `windows-x86` |
-            | Windows on ARM | `windows-arm64` |
-            | Linux 64-bit | `linux-x64` |
-            | Linux ARM64 | `linux-arm64` |
-
-            Video thumbnails require `ffmpeg` installed on your system; image
-            thumbnails work out of the box. Linux additionally needs WebKitGTK
-            (`libwebkit2gtk-4.1-0`) present at runtime.
+      # Publish THIS leg's asset straight into the pre-created release. Because
+      # every leg does this independently (and the release already exists), a
+      # slow or starved platform never blocks the others -- its asset simply
+      # arrives whenever that leg finishes. --clobber makes re-runs idempotent.
+      - name: Upload asset to release
+        if: env.IS_DRY_RUN != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "v$VERSION" MegaBasterd-*.zip \
+            --repo "$GITHUB_REPOSITORY" --clobber
